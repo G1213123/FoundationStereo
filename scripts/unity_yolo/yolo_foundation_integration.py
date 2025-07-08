@@ -175,9 +175,13 @@ def extract_block_coordinates(detections, depth_map, K, min_depth=0.1, max_depth
     return block_coordinates
 
 def visualize_results(image_path, detections, block_coordinates, output_dir):
-    """Visualize detection results and save point cloud"""
+    """Visualize detection results and save multiple visualization formats"""
     # Load original image
     img = cv2.imread(image_path)
+    img_height, img_width = img.shape[:2]
+    
+    # Create annotated version
+    annotated_img = img.copy()
     
     # Draw 2D detections
     for i, detection in enumerate(detections):
@@ -186,21 +190,27 @@ def visualize_results(image_path, detections, block_coordinates, output_dir):
         x1, y1, x2, y2 = box
         
         # Draw bounding box
-        cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        cv2.rectangle(annotated_img, (x1, y1), (x2, y2), (0, 255, 0), 2)
         
         # Add label
         label = f"Block {i}: {confidence:.3f}"
-        cv2.putText(img, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+        cv2.putText(annotated_img, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
         
         # Add 3D info if available
         if i < len(block_coordinates):
             centroid = block_coordinates[i]['centroid_3d']
             coord_text = f"3D: [{centroid[0]:.2f}, {centroid[1]:.2f}, {centroid[2]:.2f}]m"
-            cv2.putText(img, coord_text, (x1, y2+20), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1)
+            cv2.putText(annotated_img, coord_text, (x1, y2+20), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1)
     
     # Save annotated image
-    cv2.imwrite(f'{output_dir}/blocks_3d_detection.jpg', img)
+    cv2.imwrite(f'{output_dir}/blocks_3d_detection.jpg', annotated_img)
     logging.info(f"Annotated image saved to {output_dir}/blocks_3d_detection.jpg")
+    
+    # Create FoundationStereo-style vis.png (side-by-side comparison)
+    # Create a side-by-side visualization: original + annotated
+    vis_img = np.concatenate([img, annotated_img], axis=1)
+    cv2.imwrite(f'{output_dir}/vis.png', vis_img)
+    logging.info(f"Side-by-side visualization saved to {output_dir}/vis.png")
     
     # Create and save point cloud
     if block_coordinates:
@@ -267,7 +277,7 @@ def main():
     # Load YOLO model
     if args.yolo_model is None:
         runs_dir = os.getenv('RUNS_DIR', './runs')
-        args.yolo_model = os.path.join(runs_dir, "unity_blocks_auto6", "weights", "best.pt")
+        args.yolo_model = os.path.join(runs_dir, "unity_blocks_auto7", "weights", "best.pt")
     
     logging.info(f"Loading YOLO model: {args.yolo_model}")
     yolo_model = YOLO(args.yolo_model)
