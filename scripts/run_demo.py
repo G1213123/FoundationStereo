@@ -52,7 +52,7 @@ if __name__=="__main__":
 
   model = FoundationStereo(args)
 
-  ckpt = torch.load(ckpt_dir)
+  ckpt = torch.load(ckpt_dir, weights_only=False)
   logging.info(f"ckpt global_step:{ckpt['global_step']}, epoch:{ckpt['epoch']}")
   model.load_state_dict(ckpt['model'])
 
@@ -62,6 +62,13 @@ if __name__=="__main__":
   code_dir = os.path.dirname(os.path.realpath(__file__))
   img0 = imageio.imread(args.left_file)
   img1 = imageio.imread(args.right_file)
+  
+  # Convert RGBA to RGB if needed (for Unity images)
+  if img0.shape[-1] == 4:
+    img0 = img0[:, :, :3]  # Remove alpha channel
+  if img1.shape[-1] == 4:
+    img1 = img1[:, :, :3]  # Remove alpha channel
+    
   scale = args.scale
   assert scale<=1, "scale must be <=1"
   img0 = cv2.resize(img0, fx=scale, fy=scale, dsize=None)

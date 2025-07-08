@@ -150,11 +150,38 @@ class DPT_DINOv2(nn.Module):
 
         assert encoder in ['vits', 'vitb', 'vitl']
 
-        # in case the Internet connection is not stable, please load the DINOv2 locally
-        # if localhub:
-        #     self.pretrained = torch.hub.load('torchhub/facebookresearch_dinov2_main', 'dinov2_{:}14'.format(encoder), source='local', pretrained=False)
-        # else:
-        self.pretrained = torch.hub.load('facebookresearch/dinov2', 'dinov2_{:}14'.format(encoder), pretrained=pretrained_dino)
+        # Try to load DINOv2 locally first, fallback to remote if not available
+        try:
+            # Add the dinov2 directory to Python path
+            import sys
+            dinov2_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'dinov2'))
+            if dinov2_path not in sys.path:
+                sys.path.insert(0, dinov2_path)
+            
+            # Import local dinov2 hub functions
+            from dinov2.hub.backbones import _make_dinov2_model
+            
+            # Map encoder names for the local dinov2 function
+            arch_mapping = {
+                'vits': 'vit_small',
+                'vitb': 'vit_base', 
+                'vitl': 'vit_large'
+            }
+            
+            # Load model using local dinov2 implementation without downloading weights
+            self.pretrained = _make_dinov2_model(
+                arch_name=arch_mapping[encoder],
+                pretrained=False,  # Don't download weights from hub
+                img_size=518,
+                patch_size=14
+            )
+            print(f"✓ Successfully loaded DINOv2-{encoder} locally without downloading from Hugging Face")
+            
+        except Exception as e:
+            print(f"⚠ Failed to load DINOv2 locally: {e}")
+            print(f"⚠ Falling back to Hugging Face Hub download...")
+            # Fallback to original hub loading
+            self.pretrained = torch.hub.load('facebookresearch/dinov2', 'dinov2_{:}14'.format(encoder), pretrained=pretrained_dino)
 
 
         dim = self.pretrained.blocks[0].attn.qkv.in_features
