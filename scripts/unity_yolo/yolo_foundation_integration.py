@@ -82,8 +82,8 @@ def get_segmentation_masks(yolo_model, image_path, conf_threshold=0.5):
 def run_foundation_stereo(model, left_image, right_image, args):
     """Run FoundationStereo to get disparity map"""
     # Load and preprocess images
-    img0 = cv2.imread(left_image)
-    img1 = cv2.imread(right_image)
+    img0 = imageio.imread(left_image)
+    img1 = imageio.imread(right_image)
     img0_ori = img0.copy()
     
     H, W = img0.shape[:2]
@@ -214,23 +214,28 @@ def visualize_results(image_path, detections, block_coordinates, output_dir, dis
     
     # Create disparity map visualization if provided
     if disparity_map is not None:
-        # Normalize disparity for visualization
-        disp_normalized = cv2.normalize(disparity_map, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+        # Use the same visualization as the original FoundationStereo demo
+        from Utils import vis_disparity
         
-        # Apply colormap to disparity
-        disp_colored = cv2.applyColorMap(disp_normalized, cv2.COLORMAP_JET)
+        # Apply the same invalid pixel handling as the original demo
+        disp_for_vis = disparity_map.copy()
         
-        # Resize disparity to match original image size if needed
-        if disp_colored.shape[:2] != (img_height, img_width):
-            disp_colored = cv2.resize(disp_colored, (img_width, img_height))
+        # Remove invisible pixels (same logic as original demo)
+        yy, xx = np.meshgrid(np.arange(disp_for_vis.shape[0]), np.arange(disp_for_vis.shape[1]), indexing='ij')
+        us_right = xx - disp_for_vis
+        invalid = us_right < 0
+        disp_for_vis[invalid] = np.inf
+        
+        # Create proper disparity visualization using FoundationStereo's method
+        vis_disp = vis_disparity(disp_for_vis, color_map=cv2.COLORMAP_TURBO)
         
         # Create overlay: blend original image with disparity map
         alpha = 0.6  # Weight for original image
         beta = 0.4   # Weight for disparity map
-        disparity_overlay = cv2.addWeighted(img, alpha, disp_colored, beta, 0)
+        disparity_overlay = cv2.addWeighted(img, alpha, vis_disp, beta, 0)
         
         # Save disparity visualizations
-        cv2.imwrite(f'{output_dir}/disparity_map.jpg', disp_colored)
+        cv2.imwrite(f'{output_dir}/disparity_map.jpg', vis_disp)
         cv2.imwrite(f'{output_dir}/disparity_overlay.jpg', disparity_overlay)
         logging.info(f"Disparity map saved to {output_dir}/disparity_map.jpg")
         logging.info(f"Disparity overlay saved to {output_dir}/disparity_overlay.jpg")
@@ -241,7 +246,7 @@ def visualize_results(image_path, detections, block_coordinates, output_dir, dis
         target_width = int(target_height * img_width / img_height)
         
         img_resized = cv2.resize(img, (target_width, target_height))
-        disp_resized = cv2.resize(disp_colored, (target_width, target_height))
+        disp_resized = cv2.resize(vis_disp, (target_width, target_height))
         overlay_resized = cv2.resize(disparity_overlay, (target_width, target_height))
         annotated_resized = cv2.resize(annotated_img, (target_width, target_height))
         
@@ -348,9 +353,8 @@ def main():
     set_seed(0)
     torch.autograd.set_grad_enabled(False)
     
-    foundation_model = torch.nn.DataParallel(FoundationStereo(args), device_ids=[0])
+    foundation_model = FoundationStereo(args)
     foundation_model.load_state_dict(torch.load(args.foundation_model, weights_only=False)['model'], strict=False)
-    foundation_model = foundation_model.module
     foundation_model.cuda()
     foundation_model.eval()
     
