@@ -36,7 +36,7 @@ def load_intrinsics(intrinsic_file):
     """Load camera intrinsics and baseline from file"""
     with open(intrinsic_file, 'r') as f:
         lines = f.readlines()
-        K = np.array(list(map(float, lines[0].rstrip().split()))).astype(np.float32).reshape(3,3)
+        K = np.array(list(map(float, lines[0].rstrip().split()))).astype(np.float32).reshape(3,3).T
         baseline = float(lines[1])
     return K, baseline
 
@@ -174,7 +174,7 @@ def extract_block_coordinates(detections, depth_map, K, min_depth=0.1, max_depth
     
     return block_coordinates
 
-def visualize_results(image_path, detections, block_coordinates, output_dir):
+def visualize_results(image_path, detections, block_coordinates, output_dir, disparity_map=None):
     """Visualize detection results and save multiple visualization formats"""
     # Load original image
     img = cv2.imread(image_path)
@@ -211,6 +211,58 @@ def visualize_results(image_path, detections, block_coordinates, output_dir):
     vis_img = np.concatenate([img, annotated_img], axis=1)
     cv2.imwrite(f'{output_dir}/vis.png', vis_img)
     logging.info(f"Side-by-side visualization saved to {output_dir}/vis.png")
+    
+    # Create disparity map visualization if provided
+    if disparity_map is not None:
+        # Normalize disparity for visualization
+        disp_normalized = cv2.normalize(disparity_map, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+        
+        # Apply colormap to disparity
+        disp_colored = cv2.applyColorMap(disp_normalized, cv2.COLORMAP_JET)
+        
+        # Resize disparity to match original image size if needed
+        if disp_colored.shape[:2] != (img_height, img_width):
+            disp_colored = cv2.resize(disp_colored, (img_width, img_height))
+        
+        # Create overlay: blend original image with disparity map
+        alpha = 0.6  # Weight for original image
+        beta = 0.4   # Weight for disparity map
+        disparity_overlay = cv2.addWeighted(img, alpha, disp_colored, beta, 0)
+        
+        # Save disparity visualizations
+        cv2.imwrite(f'{output_dir}/disparity_map.jpg', disp_colored)
+        cv2.imwrite(f'{output_dir}/disparity_overlay.jpg', disparity_overlay)
+        logging.info(f"Disparity map saved to {output_dir}/disparity_map.jpg")
+        logging.info(f"Disparity overlay saved to {output_dir}/disparity_overlay.jpg")
+        
+        # Create comprehensive visualization: original, disparity, overlay, detections
+        # Resize all images to same dimensions for grid
+        target_height = min(400, img_height)
+        target_width = int(target_height * img_width / img_height)
+        
+        img_resized = cv2.resize(img, (target_width, target_height))
+        disp_resized = cv2.resize(disp_colored, (target_width, target_height))
+        overlay_resized = cv2.resize(disparity_overlay, (target_width, target_height))
+        annotated_resized = cv2.resize(annotated_img, (target_width, target_height))
+        
+        # Create 2x2 grid
+        top_row = np.concatenate([img_resized, disp_resized], axis=1)
+        bottom_row = np.concatenate([overlay_resized, annotated_resized], axis=1)
+        grid_viz = np.concatenate([top_row, bottom_row], axis=0)
+        
+        # Add labels to the grid
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.6
+        color = (255, 255, 255)
+        thickness = 2
+        
+        cv2.putText(grid_viz, "Original", (10, 25), font, font_scale, color, thickness)
+        cv2.putText(grid_viz, "Disparity Map", (target_width + 10, 25), font, font_scale, color, thickness)
+        cv2.putText(grid_viz, "Disparity Overlay", (10, target_height + 25), font, font_scale, color, thickness)
+        cv2.putText(grid_viz, "3D Detections", (target_width + 10, target_height + 25), font, font_scale, color, thickness)
+        
+        cv2.imwrite(f'{output_dir}/comprehensive_visualization.jpg', grid_viz)
+        logging.info(f"Comprehensive visualization saved to {output_dir}/comprehensive_visualization.jpg")
     
     # Create and save point cloud
     if block_coordinates:
@@ -276,7 +328,7 @@ def main():
     
     # Load YOLO model
     if args.yolo_model is None:
-        runs_dir = os.getenv('RUNS_DIR', './runs')
+        runs_dir = os.getenv('RUNS_DIR', '../../runs')
         args.yolo_model = os.path.join(runs_dir, "unity_blocks_auto7", "weights", "best.pt")
     
     logging.info(f"Loading YOLO model: {args.yolo_model}")
@@ -348,7 +400,7 @@ def main():
     logging.info(f"Results saved to {results_file}")
     
     # Save visualizations
-    visualize_results(args.left_image, detections, block_coordinates, args.output_dir)
+    visualize_results(args.left_image, detections, block_coordinates, args.output_dir, disparity)
     
     # Save depth map
     np.save(f'{args.output_dir}/depth_map.npy', depth)

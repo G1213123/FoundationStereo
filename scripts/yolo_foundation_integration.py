@@ -35,7 +35,7 @@ def load_intrinsics(intrinsic_file):
     """Load camera intrinsics and baseline from file"""
     with open(intrinsic_file, 'r') as f:
         lines = f.readlines()
-        K = np.array(list(map(float, lines[0].rstrip().split()))).astype(np.float32).reshape(3,3)
+        K = np.array(list(map(float, lines[0].rstrip().split()))).astype(np.float32).reshape(3,3).T
         baseline = float(lines[1])
     return K, baseline
 
