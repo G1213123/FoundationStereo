@@ -84,6 +84,16 @@ def run_foundation_stereo(model, left_image, right_image, args):
     # Load and preprocess images
     img0 = imageio.imread(left_image)
     img1 = imageio.imread(right_image)
+    # Ensure 3-channel RGB (drop alpha channel or expand grayscale)
+    if img0.ndim == 2:
+        img0 = np.stack([img0] * 3, axis=-1)
+    elif img0.shape[2] == 4:
+        img0 = img0[..., :3]
+    if img1.ndim == 2:
+        img1 = np.stack([img1] * 3, axis=-1)
+    elif img1.shape[2] == 4:
+        img1 = img1[..., :3]
+
     img0_ori = img0.copy()
     
     H, W = img0.shape[:2]

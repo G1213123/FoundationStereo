@@ -6,7 +6,6 @@ __pycache__
 DATA/*
 test_outputs
 .venv
-runs
 results
 visualizations
 datasets
