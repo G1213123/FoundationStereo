@@ -11,3 +11,6 @@ visualizations
 datasets
 output_3d_blocks
 .vscode
+image_sample
+runs
+yolo*.pt

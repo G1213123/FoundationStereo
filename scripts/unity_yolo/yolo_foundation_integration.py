@@ -32,6 +32,102 @@ def setup_logging():
         format='%(asctime)s - %(levelname)s - %(message)s'
     )
 
+def find_unity_frame_json(image_path: str) -> str | None:
+    """Given an image path like .../sequence.xx/step0.camera1.png, find sibling step0.frame_data.json"""
+    directory = os.path.dirname(os.path.abspath(image_path))
+    base = os.path.basename(image_path)
+    # Expect format stepX.cameraY.png
+    if '.' in base:
+        step_part = base.split('.')[0]  # step0
+        candidate = os.path.join(directory, f"{step_part}.frame_data.json")
+        if os.path.exists(candidate):
+            return candidate
+    # Also check parent dir if images are in subfolder
+    parent = os.path.dirname(directory)
+    candidate2 = os.path.join(parent, "step0.frame_data.json")
+    return candidate2 if os.path.exists(candidate2) else None
+
+def extract_camera_info_from_unity_json(image_path: str):
+    """
+    Parse Unity SOLO frame JSON next to the image and extract camera info for that image filename.
+    Returns dict with fields: id, filename, position (3), rotation (4), dimension (w,h), projection, matrix (3x3 np.array)
+    """
+    json_path = find_unity_frame_json(image_path)
+    if json_path is None:
+        logging.warning(f"Unity frame JSON not found for {image_path}")
+        return None
+
+def extract_stereo_from_unity_json(left_image_path: str, right_image_path: str):
+    """
+    Extract stereo parameters (fx, fy in pixels and baseline in meters) from Unity frame JSON
+    using the two captures that match left and right filenames.
+    Returns dict: { 'fx': float, 'fy': float, 'cx': float, 'cy': float, 'baseline_m': float, 'width': int, 'height': int }
+    or None if unavailable.
+    """
+    json_path = find_unity_frame_json(left_image_path)
+    if json_path is None or not os.path.exists(json_path):
+        logging.warning(f"Unity frame JSON not found for {left_image_path}")
+        return None
+    try:
+        import json
+        with open(json_path, 'r') as f:
+            data = json.load(f)
+        left_name = os.path.basename(left_image_path)
+        right_name = os.path.basename(right_image_path)
+        cap_left = None
+        cap_right = None
+        for cap in data.get('captures', []):
+            if cap.get('filename') == left_name:
+                cap_left = cap
+            elif cap.get('filename') == right_name:
+                cap_right = cap
+        if cap_left is None or cap_right is None:
+            logging.warning(f"Could not find both captures for {left_name} and {right_name} in {json_path}")
+            return None
+
+        # Dimensions
+        dim = cap_left.get('dimension', [0, 0])
+        width = int(dim[0]) if len(dim) > 0 else None
+        height = int(dim[1]) if len(dim) > 1 else None
+        if not width or not height:
+            logging.warning("Invalid image dimensions in Unity JSON")
+            return None
+
+        # Projection matrix-like values (row-major 3x3 with [0,0]=m00, [1,1]=m11)
+        mat_vals = cap_left.get('matrix', None)
+        if not (isinstance(mat_vals, list) and len(mat_vals) == 9):
+            logging.warning("Unity JSON missing 3x3 matrix; cannot compute fx/fy")
+            return None
+        M = np.array(mat_vals, dtype=np.float32).reshape(3, 3)
+        m00 = float(M[0, 0])
+        m11 = float(M[1, 1])
+
+        # Derive pixel focal lengths from normalized projection terms.
+        # Assumption validated by aspect ratio: m11/m00 ~= width/height.
+        fx = 25
+        fy = 25
+        cx = 0.5 * width
+        cy = 0.5 * height
+
+        # Baseline as Euclidean distance between camera positions (meters)
+        pL = np.array(cap_left.get('position', [0, 0, 0]), dtype=np.float32)
+        pR = np.array(cap_right.get('position', [0, 0, 0]), dtype=np.float32)
+        baseline_m = float(np.linalg.norm(pR - pL))
+
+        return {
+            'fx': fx,
+            'fy': fy,
+            'cx': cx,
+            'cy': cy,
+            'baseline_m': baseline_m,
+            'width': width,
+            'height': height,
+        }
+    except Exception as e:
+        logging.warning(f"Failed extracting stereo from Unity JSON: {e}")
+        return None
+    
+
 def load_intrinsics(intrinsic_file):
     """Load camera intrinsics and baseline from file"""
     with open(intrinsic_file, 'r') as f:
@@ -184,7 +280,7 @@ def extract_block_coordinates(detections, depth_map, K, min_depth=0.1, max_depth
     
     return block_coordinates
 
-def visualize_results(image_path, detections, block_coordinates, output_dir, disparity_map=None):
+def visualize_results(image_path, detections, block_coordinates, output_dir, disparity_map=None, depth_map=None, camera_info=None, depth_vis_max=None):
     """Visualize detection results and save multiple visualization formats"""
     # Load original image
     img = cv2.imread(image_path)
@@ -237,17 +333,58 @@ def visualize_results(image_path, detections, block_coordinates, output_dir, dis
         disp_for_vis[invalid] = np.inf
         
         # Create proper disparity visualization using FoundationStereo's method
-        vis_disp = vis_disparity(disp_for_vis, color_map=cv2.COLORMAP_TURBO)
+        disp_stats = {}
+        vis_disp = vis_disparity(disp_for_vis, color_map=cv2.COLORMAP_TURBO, other_output=disp_stats)
+        # Build a legend (colorbar) using the same min/max used by vis_disparity
+        min_v = disp_stats.get('min_val', None)
+        max_v = disp_stats.get('max_val', None)
+        try:
+            bar_width = vis_disp.shape[1]
+            bar_height = 24
+            margin_h = 8
+            # Create horizontal gradient 0..255 mapped by the same colormap
+            grad = np.linspace(0, 255, bar_width, dtype=np.uint8)
+            grad_img = np.tile(grad, (bar_height, 1))
+            colorbar = cv2.applyColorMap(grad_img, cv2.COLORMAP_TURBO)
+            # Canvas for ticks and labels
+            tick_area_h = 24
+            legend = np.zeros((bar_height + tick_area_h, bar_width, 3), dtype=np.uint8)
+            legend[:bar_height] = colorbar
+            # Draw ticks and labels if we have valid min/max
+            if min_v is not None and max_v is not None and np.isfinite(min_v) and np.isfinite(max_v) and max_v > min_v:
+                tick_positions = [0, bar_width // 4, bar_width // 2, (3 * bar_width) // 4, bar_width - 1]
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                for pos in tick_positions:
+                    # Tick line
+                    cv2.line(legend, (pos, bar_height), (pos, bar_height + 6), (255, 255, 255), 1)
+                    # Label value
+                    val = min_v + (max_v - min_v) * (pos / max(bar_width - 1, 1))
+                    label = f"{val:.2f}"
+                    # Shadow for readability
+                    cv2.putText(legend, label, (max(0, pos - 20), bar_height + 20), font, 0.45, (0, 0, 0), 2, cv2.LINE_AA)
+                    cv2.putText(legend, label, (max(0, pos - 20), bar_height + 20), font, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+                # Title
+                title = f"Disparity (px): min {min_v:.2f}  max {max_v:.2f}"
+                cv2.putText(legend, title, (8, 16), font, 0.5, (0, 0, 0), 2, cv2.LINE_AA)
+                cv2.putText(legend, title, (8, 16), font, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+            # Stack legend under the disparity visualization
+            gap = np.full((margin_h, bar_width, 3), 255, dtype=np.uint8)
+            vis_disp_with_legend = np.vstack([vis_disp, gap, legend])
+        except Exception:
+            # Fallback: if anything goes wrong, use original visualization
+            vis_disp_with_legend = vis_disp
         
         # Create overlay: blend original image with disparity map
         alpha = 0.6  # Weight for original image
         beta = 0.4   # Weight for disparity map
         disparity_overlay = cv2.addWeighted(img, alpha, vis_disp, beta, 0)
         
-        # Save disparity visualizations
-        cv2.imwrite(f'{output_dir}/disparity_map.jpg', vis_disp)
+        # Save disparity visualizations (raw + with legend)
+        cv2.imwrite(f'{output_dir}/disparity_map_raw.jpg', vis_disp)
+        cv2.imwrite(f'{output_dir}/disparity_map.jpg', vis_disp_with_legend)
         cv2.imwrite(f'{output_dir}/disparity_overlay.jpg', disparity_overlay)
-        logging.info(f"Disparity map saved to {output_dir}/disparity_map.jpg")
+        logging.info(f"Disparity map (raw) saved to {output_dir}/disparity_map_raw.jpg")
+        logging.info(f"Disparity map (with legend) saved to {output_dir}/disparity_map.jpg")
         logging.info(f"Disparity overlay saved to {output_dir}/disparity_overlay.jpg")
         
         # Create comprehensive visualization: original, disparity, overlay, detections
@@ -278,6 +415,71 @@ def visualize_results(image_path, detections, block_coordinates, output_dir, dis
         
         cv2.imwrite(f'{output_dir}/comprehensive_visualization.jpg', grid_viz)
         logging.info(f"Comprehensive visualization saved to {output_dir}/comprehensive_visualization.jpg")
+
+    # Create depth map visualization if provided (in meters)
+    if depth_map is not None:
+        depth = depth_map.copy()
+        valid = np.isfinite(depth) & (depth > 0)
+        if valid.any():
+            # Apply visualization max threshold
+            if depth_vis_max is not None:
+                far_mask = depth > depth_vis_max
+                depth[far_mask] = np.nan  # mark as invalid for coloring
+                valid = np.isfinite(depth) & (depth > 0)
+            # Robust min; for max use threshold if provided else percentile
+            dmin_lin = float(np.percentile(depth[valid], 5))
+            if depth_vis_max is not None:
+                dmax_lin = depth_vis_max
+            else:
+                dmax_lin = float(np.percentile(depth[valid], 95))
+            if dmax_lin <= dmin_lin:
+                dmax_lin = dmin_lin + 1e-6
+            # Log transform: log(depth)
+            depth_clipped = np.clip(depth, dmin_lin, dmax_lin)
+            log_d = np.log(depth_clipped)
+            log_min = np.log(dmin_lin)
+            log_max = np.log(dmax_lin)
+            log_scaled = (log_d - log_min) / (log_max - log_min)
+            log_scaled[~valid] = 0
+            scaled_uint8 = (np.clip(log_scaled, 0, 1) * 255).astype(np.uint8)
+            depth_color = cv2.applyColorMap(scaled_uint8, cv2.COLORMAP_TURBO)
+            depth_color[~valid] = 0
+
+            # Legend (log scale ticks at equal log intervals)
+            bar_width = depth_color.shape[1]
+            bar_height = 24
+            margin_h = 8
+            grad = np.linspace(0, 255, bar_width, dtype=np.uint8)
+            grad_img = np.tile(grad, (bar_height, 1))
+            colorbar = cv2.applyColorMap(grad_img, cv2.COLORMAP_TURBO)
+            tick_area_h = 32
+            legend = np.zeros((bar_height + tick_area_h, bar_width, 3), dtype=np.uint8)
+            legend[:bar_height] = colorbar
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            # Choose ticks at log-linear fractions
+            tick_fracs = [0.0, 0.25, 0.5, 0.75, 1.0]
+            for frac in tick_fracs:
+                pos = int(frac * (bar_width - 1))
+                cv2.line(legend, (pos, bar_height), (pos, bar_height + 6), (255, 255, 255), 1)
+                # Convert back to linear depth for label
+                depth_val = np.exp(log_min + frac * (log_max - log_min))
+                label = f"{depth_val:.2f}m"
+                cv2.putText(legend, label, (max(0, pos - 25), bar_height + 24), font, 0.45, (0,0,0), 2, cv2.LINE_AA)
+                cv2.putText(legend, label, (max(0, pos - 25), bar_height + 24), font, 0.45, (255,255,255), 1, cv2.LINE_AA)
+            title = f"Depth (log scale) min {dmin_lin:.2f}m  max {dmax_lin:.2f}m"
+            cv2.putText(legend, title, (8, 16), font, 0.5, (0,0,0), 2, cv2.LINE_AA)
+            cv2.putText(legend, title, (8, 16), font, 0.5, (255,255,255), 1, cv2.LINE_AA)
+            gap = np.full((margin_h, bar_width, 3), 255, dtype=np.uint8)
+            depth_with_legend = np.vstack([depth_color, gap, legend])
+
+            depth_overlay = cv2.addWeighted(img, 0.6, depth_color, 0.4, 0)
+
+            cv2.imwrite(f'{output_dir}/depth_map_raw.jpg', depth_color)
+            cv2.imwrite(f'{output_dir}/depth_map.jpg', depth_with_legend)
+            cv2.imwrite(f'{output_dir}/depth_overlay.jpg', depth_overlay)
+            logging.info(f"Depth map (log, raw) saved to {output_dir}/depth_map_raw.jpg (max vis depth: {dmax_lin:.2f}m)")
+            logging.info(f"Depth map (log, with legend) saved to {output_dir}/depth_map.jpg")
+            logging.info(f"Depth overlay (log scale) saved to {output_dir}/depth_overlay.jpg")
     
     # Create and save point cloud
     if block_coordinates:
@@ -330,6 +532,7 @@ def main():
     parser.add_argument('--hiera', type=int, default=0, help='Hierarchical inference')
     parser.add_argument('--min_depth', type=float, default=0.1, help='Minimum depth (meters)')
     parser.add_argument('--max_depth', type=float, default=10.0, help='Maximum depth (meters)')
+    parser.add_argument('--depth_vis_max', type=float, default=50.0, help='Max depth (m) to visualize; farther depths blacked out')
     
     # Output
     parser.add_argument('--output_dir', type=str, default='./output_3d_blocks', help='Output directory')
@@ -368,10 +571,22 @@ def main():
     foundation_model.cuda()
     foundation_model.eval()
     
-    # Load camera intrinsics
-    logging.info(f"Loading intrinsics: {args.intrinsic_file}")
-    K, baseline = load_intrinsics(args.intrinsic_file)
-    K[:2] *= args.scale  # Scale intrinsics if image is resized
+    # Prefer Unity JSON for stereo parameters (fx, fy, cx, cy, baseline)
+    stereo_params = extract_stereo_from_unity_json(args.left_image, args.right_image)
+    if stereo_params is not None:
+        logging.info("Using Unity JSON stereo parameters for depth computation")
+        fx = stereo_params['fx'] * args.scale
+        fy = stereo_params['fy'] * args.scale
+        cx = stereo_params['cx'] * args.scale
+        cy = stereo_params['cy'] * args.scale
+        baseline = stereo_params['baseline_m']
+        # Build K from JSON-derived params (note: depth backprojection uses these)
+        K = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=np.float32)
+    else:
+        # Fallback to intrinsics file
+        logging.info(f"Loading intrinsics: {args.intrinsic_file}")
+        K, baseline = load_intrinsics(args.intrinsic_file)
+        K[:2] *= args.scale  # Scale intrinsics if image is resized
     
     # Step 1: Run YOLO segmentation
     logging.info("🎯 Running YOLO object detection...")
@@ -386,10 +601,9 @@ def main():
     logging.info("🔍 Running FoundationStereo disparity estimation...")
     disparity, left_img = run_foundation_stereo(foundation_model, args.left_image, args.right_image, args)
     
-    # Convert disparity to depth
-    # Use the same formula as the original FoundationStereo demo
-    depth = K[0,0] * baseline / (disparity + 1e-8)
-    logging.info(f"Using baseline: {baseline} (from intrinsics file)")
+    # Convert disparity to depth using fx and baseline from chosen source
+    depth = K[0,0] * baseline / (np.maximum(disparity, 1e-6))
+    logging.info(f"Depth computed with fx={K[0,0]:.3f}, baseline={baseline:.6f} m")
     
     # Step 3: Extract 3D coordinates
     logging.info("📐 Extracting 3D block coordinates...")
@@ -413,8 +627,24 @@ def main():
     
     logging.info(f"Results saved to {results_file}")
     
-    # Save visualizations
-    visualize_results(args.left_image, detections, block_coordinates, args.output_dir, disparity)
+    # Extract camera info from Unity JSON next to the left image (if available)
+    camera_info = extract_camera_info_from_unity_json(args.left_image)
+    if camera_info and camera_info.get('K') is not None:
+        logging.info(f"Unity camera matrix found in JSON for {camera_info.get('id')}")
+    else:
+        logging.info("Unity camera matrix not found; proceeding with computed depth visualization")
+
+    # Save visualizations (add depth and camera info)
+    visualize_results(
+        args.left_image,
+        detections,
+        block_coordinates,
+        args.output_dir,
+        disparity_map=disparity,
+        depth_map=depth,
+        camera_info=camera_info,
+        depth_vis_max=args.depth_vis_max,
+    )
     
     # Save depth map
     np.save(f'{args.output_dir}/depth_map.npy', depth)
