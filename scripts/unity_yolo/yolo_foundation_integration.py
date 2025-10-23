@@ -4,8 +4,9 @@ YOLO + FoundationStereo Integration Script
 Combines YOLO segmentation boundaries with FoundationStereo disparity 
 to get 3D block coordinates relative to the camera.
 """
-
 import os
+os.environ["OPENCV_IO_ENABLE_OPENEXR"]="1"
+
 import sys
 import argparse
 import numpy as np
@@ -15,6 +16,28 @@ import open3d as o3d
 from ultralytics import YOLO
 from dotenv import load_dotenv
 import logging
+import imageio
+import json
+
+# --- EXR saving utility ---
+def save_exr_float32(path: str, img: np.ndarray) -> bool:
+    """Save depth/disparity as EXR using imageio, with value in RED channel and G/B = 0.
+    - Accepts single-channel or multi-channel arrays; always writes 3-channel float32 EXR where R=values, G=B=0.
+    Returns True on success, False on failure.
+    """
+    try:
+        if img is None:
+            return False
+        arr = np.asarray(img)
+        h, w = arr.shape
+        arr = arr.astype(np.float32, copy=False)
+        arr3 = np.zeros((h, w, 3), dtype=np.float32)
+        arr3[..., 0] = arr  # R channel holds depth
+
+        imageio.imwrite(path, arr3, format='EXR')
+        return True
+    except Exception:
+        return False
 
 # Add project paths
 code_dir = os.path.dirname(os.path.realpath(__file__))
@@ -288,6 +311,18 @@ def visualize_results(image_path, detections, block_coordinates, output_dir, dis
     
     # Create annotated version
     annotated_img = img.copy()
+    # Prepare to collect segmentation contours for reuse on overlays
+    mask_contours = []  # list of tuples: (contours, color)
+    # Distinct colors for different instances (BGR)
+    contour_colors = [
+        (0, 255, 255),  # yellow
+        (255, 0, 255),  # magenta
+        (255, 255, 0),  # cyan
+        (0, 165, 255),  # orange
+        (0, 255, 0),    # green
+        (0, 0, 255),    # red
+        (255, 0, 0),    # blue
+    ]
     
     # Draw 2D detections
     for i, detection in enumerate(detections):
@@ -307,16 +342,24 @@ def visualize_results(image_path, detections, block_coordinates, output_dir, dis
             centroid = block_coordinates[i]['centroid_3d']
             coord_text = f"3D: [{centroid[0]:.2f}, {centroid[1]:.2f}, {centroid[2]:.2f}]m"
             cv2.putText(annotated_img, coord_text, (x1, y2+20), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1)
+        
+        # If we have a segmentation mask, draw its edge/contours
+        mask = detection.get('mask')
+        if mask is not None:
+            # Resize mask to full image size (nearest to preserve edges)
+            mask_resized = cv2.resize(mask.astype(np.uint8), (img_width, img_height), interpolation=cv2.INTER_NEAREST)
+            # Binarize and find contours
+            mask_bin = (mask_resized > 0).astype(np.uint8) * 255
+            contours, _ = cv2.findContours(mask_bin, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            color = contour_colors[i % len(contour_colors)]
+            if contours:
+                cv2.drawContours(annotated_img, contours, -1, color, 2)
+                mask_contours.append((contours, color))
     
     # Save annotated image
     cv2.imwrite(f'{output_dir}/blocks_3d_detection.jpg', annotated_img)
     logging.info(f"Annotated image saved to {output_dir}/blocks_3d_detection.jpg")
-    
-    # Create FoundationStereo-style vis.png (side-by-side comparison)
-    # Create a side-by-side visualization: original + annotated
-    vis_img = np.concatenate([img, annotated_img], axis=1)
-    cv2.imwrite(f'{output_dir}/vis.png', vis_img)
-    logging.info(f"Side-by-side visualization saved to {output_dir}/vis.png")
+
     
     # Create disparity map visualization if provided
     if disparity_map is not None:
@@ -378,13 +421,14 @@ def visualize_results(image_path, detections, block_coordinates, output_dir, dis
         alpha = 0.6  # Weight for original image
         beta = 0.4   # Weight for disparity map
         disparity_overlay = cv2.addWeighted(img, alpha, vis_disp, beta, 0)
+        # Draw segmentation contours on disparity overlay, if any
+        for contours, color in mask_contours:
+            cv2.drawContours(disparity_overlay, contours, -1, color, 2)
         
-        # Save disparity visualizations (raw + with legend)
-        cv2.imwrite(f'{output_dir}/disparity_map_raw.jpg', vis_disp)
+    # Save disparity visualization (with legend only)
         cv2.imwrite(f'{output_dir}/disparity_map.jpg', vis_disp_with_legend)
         cv2.imwrite(f'{output_dir}/disparity_overlay.jpg', disparity_overlay)
-        logging.info(f"Disparity map (raw) saved to {output_dir}/disparity_map_raw.jpg")
-        logging.info(f"Disparity map (with legend) saved to {output_dir}/disparity_map.jpg")
+        logging.info(f"Disparity map saved to {output_dir}/disparity_map.jpg")
         logging.info(f"Disparity overlay saved to {output_dir}/disparity_overlay.jpg")
         
         # Create comprehensive visualization: original, disparity, overlay, detections
@@ -473,13 +517,24 @@ def visualize_results(image_path, detections, block_coordinates, output_dir, dis
             depth_with_legend = np.vstack([depth_color, gap, legend])
 
             depth_overlay = cv2.addWeighted(img, 0.6, depth_color, 0.4, 0)
+            # Draw segmentation contours on depth overlay, if any
+            for contours, color in mask_contours:
+                cv2.drawContours(depth_overlay, contours, -1, color, 2)
 
-            cv2.imwrite(f'{output_dir}/depth_map_raw.jpg', depth_color)
             cv2.imwrite(f'{output_dir}/depth_map.jpg', depth_with_legend)
             cv2.imwrite(f'{output_dir}/depth_overlay.jpg', depth_overlay)
-            logging.info(f"Depth map (log, raw) saved to {output_dir}/depth_map_raw.jpg (max vis depth: {dmax_lin:.2f}m)")
-            logging.info(f"Depth map (log, with legend) saved to {output_dir}/depth_map.jpg")
-            logging.info(f"Depth overlay (log scale) saved to {output_dir}/depth_overlay.jpg")
+            logging.info(f"Depth map saved to {output_dir}/depth_map.jpg (max vis depth: {dmax_lin:.2f}m)")
+            logging.info(f"Depth overlay saved to {output_dir}/depth_overlay.jpg")
+
+    # Save raw edge map (combined contours) for later math operations
+    raw_dir = os.path.join(output_dir, 'raw')
+    os.makedirs(raw_dir, exist_ok=True)
+    edge_map = np.zeros((img_height, img_width), dtype=np.uint8)
+    for contours, _color in mask_contours:
+        cv2.drawContours(edge_map, contours, -1, 255, 2)
+    # Save edge map as .npy and as 8-bit PNG
+    np.save(os.path.join(raw_dir, 'edges.npy'), edge_map)
+    cv2.imwrite(os.path.join(raw_dir, 'edges.png'), edge_map)
     
     # Create and save point cloud
     if block_coordinates:
@@ -602,8 +657,10 @@ def main():
     disparity, left_img = run_foundation_stereo(foundation_model, args.left_image, args.right_image, args)
     
     # Convert disparity to depth using fx and baseline from chosen source
-    depth = K[0,0] * baseline / (np.maximum(disparity, 1e-6))
+    depth = K[0,0] * baseline / (np.maximum(disparity, 1e-3)) *10
     logging.info(f"Depth computed with fx={K[0,0]:.3f}, baseline={baseline:.6f} m")
+    # Enforce maximum usable range: values above 500m are marked invalid (set to 0)
+    depth = np.where(depth > 500.0, 0.0, depth)
     
     # Step 3: Extract 3D coordinates
     logging.info("📐 Extracting 3D block coordinates...")
@@ -646,8 +703,50 @@ def main():
         depth_vis_max=args.depth_vis_max,
     )
     
-    # Save depth map
-    np.save(f'{args.output_dir}/depth_map.npy', depth)
+    # Save raw matrices to raw/
+    raw_dir = os.path.join(args.output_dir, 'raw')
+    os.makedirs(raw_dir, exist_ok=True)
+    # Depth (float32 meters)
+    depth_f32 = depth.astype(np.float32)
+    np.save(os.path.join(raw_dir, 'depth.npy'), depth_f32)
+    # Save EXR for viewer compatibility
+    depth_exr_path = os.path.join(raw_dir, 'depth.exr')
+    if save_exr_float32(depth_exr_path, depth_f32):
+        logging.info(f"Depth EXR saved to {depth_exr_path}")
+    else:
+        logging.warning("Failed to save depth EXR with imageio. Kept depth.npy/depth_mm.png.")
+    # Also save a 16-bit PNG for compatibility: scale by 1000 to millimeters (clipped)
+    depth_mm = np.clip(depth_f32 * 1000.0, 0, np.iinfo(np.uint16).max).astype(np.uint16)
+    cv2.imwrite(os.path.join(raw_dir, 'depth_mm.png'), depth_mm)
+    # Disparity (float32 pixels)
+    disparity_f32 = disparity.astype(np.float32)
+    np.save(os.path.join(raw_dir, 'disparity.npy'), disparity_f32)
+    # Also save disparity as EXR for convenience
+    disp_exr_path = os.path.join(raw_dir, 'disparity.exr')
+    if save_exr_float32(disp_exr_path, disparity_f32):
+        logging.info(f"Disparity EXR saved to {disp_exr_path}")
+    else:
+        logging.warning("Failed to save disparity EXR with imageio. Kept disparity.npy/disparity_u16.png.")
+    # Optional: 16-bit PNG by scaling (preserve 0..65535 range)
+    disp_scaled = np.clip(disparity_f32, 0, 65535).astype(np.uint16)
+    cv2.imwrite(os.path.join(raw_dir, 'disparity_u16.png'), disp_scaled)
+    # Minimal metadata for later processing
+    meta = {
+        'K': K.tolist(),
+        'baseline_m': float(baseline),
+        'left_image': os.path.abspath(args.left_image),
+        'right_image': os.path.abspath(args.right_image),
+        'width': int(depth.shape[1]),
+        'height': int(depth.shape[0]),
+        'scale': float(args.scale),
+        'depth_units': 'meters',
+        'depth_png_units': 'millimeters',
+        'disparity_units': 'pixels',
+        'depth_exr_path': depth_exr_path,
+        'disparity_exr_path': disp_exr_path
+    }
+    with open(os.path.join(raw_dir, 'meta.json'), 'w') as f:
+        json.dump(meta, f, indent=2)
     
     logging.info("✅ Integration complete!")
     logging.info(f"📁 Check {args.output_dir} for all results")

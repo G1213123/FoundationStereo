@@ -1,0 +1,2 @@
+depth_roi
+- reason for need depth threshold -> to prevent edge detection tricked by far sky background
