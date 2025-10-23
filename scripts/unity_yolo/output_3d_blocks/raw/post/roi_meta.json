@@ -1,0 +1,16 @@
+{
+  "raw_dir": "C:\\Users\\1213123\\Documents\\Scripts\\FoundationStereo\\scripts\\unity_yolo\\output_3d_blocks\\raw",
+  "post_dir": "C:\\Users\\1213123\\Documents\\Scripts\\FoundationStereo\\scripts\\unity_yolo\\output_3d_blocks\\raw\\post",
+  "roi": {
+    "x1": 140,
+    "y1": 124,
+    "x2": 254,
+    "y2": 198
+  },
+  "buffer_px": 6,
+  "roi_margin_px": 10,
+  "method": "canny",
+  "edge_thresh": null,
+  "edge_percentile": 95.0,
+  "flatten_far_m": 10.0
+}

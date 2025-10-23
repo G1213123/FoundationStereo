@@ -9,7 +9,6 @@ test_outputs
 results
 visualizations
 datasets
-output_3d_blocks
 .vscode
 image_sample
 runs
