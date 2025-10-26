@@ -657,7 +657,7 @@ def main():
     disparity, left_img = run_foundation_stereo(foundation_model, args.left_image, args.right_image, args)
     
     # Convert disparity to depth using fx and baseline from chosen source
-    depth = K[0,0] * baseline / (np.maximum(disparity, 1e-3)) *10
+    depth = K[0,0] * baseline / (np.maximum(disparity, 1e-3)) *1000
     logging.info(f"Depth computed with fx={K[0,0]:.3f}, baseline={baseline:.6f} m")
     # Enforce maximum usable range: values above 500m are marked invalid (set to 0)
     depth = np.where(depth > 500.0, 0.0, depth)
