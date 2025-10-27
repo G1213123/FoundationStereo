@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 import logging
 import imageio
 import json
+import shutil
 
 # --- EXR saving utility ---
 def save_exr_float32(path: str, img: np.ndarray) -> bool:
@@ -534,7 +535,7 @@ def visualize_results(image_path, detections, block_coordinates, output_dir, dis
         cv2.drawContours(edge_map, contours, -1, 255, 2)
     # Save edge map as .npy and as 8-bit PNG
     np.save(os.path.join(raw_dir, 'edges.npy'), edge_map)
-    cv2.imwrite(os.path.join(raw_dir, 'edges.png'), edge_map)
+    cv2.imwrite(os.path.join(output_dir, 'edges.png'), edge_map)
     
     # Create and save point cloud
     if block_coordinates:
@@ -587,13 +588,24 @@ def main():
     parser.add_argument('--hiera', type=int, default=0, help='Hierarchical inference')
     parser.add_argument('--min_depth', type=float, default=0.1, help='Minimum depth (meters)')
     parser.add_argument('--max_depth', type=float, default=10.0, help='Maximum depth (meters)')
-    parser.add_argument('--depth_vis_max', type=float, default=50.0, help='Max depth (m) to visualize; farther depths blacked out')
+    parser.add_argument('--depth_vis_max', type=float, default=500.0, help='Max depth (m) to visualize; farther depths blacked out')
     
     # Output
-    parser.add_argument('--output_dir', type=str, default='./output_3d_blocks', help='Output directory')
+    parser.add_argument('--output_dir', type=str, default='../run_files/output_3d_blocks', help='Output directory')
     
     args = parser.parse_args()
-    
+
+    # Save input files
+    input_dir = os.path.join(os.path.dirname(args.output_dir), 'input_3d_blocks')
+    os.makedirs(input_dir, exist_ok=True)
+    shutil.copy2(args.left_image, os.path.join(input_dir, os.path.basename(args.left_image)))
+    shutil.copy2(args.right_image, os.path.join(input_dir, os.path.basename(args.right_image)))
+    shutil.copy2(args.intrinsic_file, os.path.join(input_dir, os.path.basename(args.intrinsic_file)))
+    for file in ['step0.camera1.Depth.exr', 'step0.frame_data.json']:
+        src_path = os.path.join(os.path.dirname(args.left_image), file)
+        if os.path.exists(src_path):
+            shutil.copy2(src_path, os.path.join(input_dir, file))
+
     # Setup
     setup_logging()
     load_dotenv()
@@ -657,10 +669,10 @@ def main():
     disparity, left_img = run_foundation_stereo(foundation_model, args.left_image, args.right_image, args)
     
     # Convert disparity to depth using fx and baseline from chosen source
-    depth = K[0,0] * baseline / (np.maximum(disparity, 1e-3)) *1000
+    depth = K[0,0] * baseline / (np.maximum(disparity, 1e-3)) * 10
     logging.info(f"Depth computed with fx={K[0,0]:.3f}, baseline={baseline:.6f} m")
-    # Enforce maximum usable range: values above 500m are marked invalid (set to 0)
-    depth = np.where(depth > 500.0, 0.0, depth)
+    # Enforce maximum usable range: values above 100m are marked invalid (set to 0)
+    depth = np.where(depth > 100.0, 0.0, depth)
     
     # Step 3: Extract 3D coordinates
     logging.info("📐 Extracting 3D block coordinates...")
@@ -717,7 +729,7 @@ def main():
         logging.warning("Failed to save depth EXR with imageio. Kept depth.npy/depth_mm.png.")
     # Also save a 16-bit PNG for compatibility: scale by 1000 to millimeters (clipped)
     depth_mm = np.clip(depth_f32 * 1000.0, 0, np.iinfo(np.uint16).max).astype(np.uint16)
-    cv2.imwrite(os.path.join(raw_dir, 'depth_mm.png'), depth_mm)
+    cv2.imwrite(os.path.join(args.output_dir, 'depth_mm.png'), depth_mm)
     # Disparity (float32 pixels)
     disparity_f32 = disparity.astype(np.float32)
     np.save(os.path.join(raw_dir, 'disparity.npy'), disparity_f32)
@@ -729,7 +741,7 @@ def main():
         logging.warning("Failed to save disparity EXR with imageio. Kept disparity.npy/disparity_u16.png.")
     # Optional: 16-bit PNG by scaling (preserve 0..65535 range)
     disp_scaled = np.clip(disparity_f32, 0, 65535).astype(np.uint16)
-    cv2.imwrite(os.path.join(raw_dir, 'disparity_u16.png'), disp_scaled)
+    cv2.imwrite(os.path.join(args.output_dir, 'disparity_u16.png'), disp_scaled)
     # Minimal metadata for later processing
     meta = {
         'K': K.tolist(),
