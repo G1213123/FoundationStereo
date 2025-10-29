@@ -1,6 +1,6 @@
 {
-  "frame": 64,
-  "sequence": 63,
+  "frame": 53,
+  "sequence": 52,
   "step": 0,
   "timestamp": 0.0,
   "captures": [
@@ -74,19 +74,6 @@
           ]
         },
         {
-          "@type": "type.unity.com/unity.solo.DepthAnnotation",
-          "id": "Depth",
-          "sensorId": "camera1",
-          "description": "Generates a 32-bit depth image in EXR format where each pixel contains the actual distance in Unity units (usually meters) from the camera to the object in the scene.",
-          "measurementStrategy": "Depth",
-          "imageFormat": "Exr",
-          "dimension": [
-            650.0,
-            400.0
-          ],
-          "filename": "step0.camera1.Depth.exr"
-        },
-        {
           "@type": "type.unity.com/unity.solo.BoundingBox3DAnnotation",
           "id": "bounding box 3D_0",
           "sensorId": "camera1",
@@ -97,20 +84,20 @@
               "labelId": 1,
               "labelName": "Module_Construction",
               "translation": [
-                18.7130661,
-                3.52335286,
-                62.7721252
+                -23.2947063,
+                7.15433168,
+                47.2106247
               ],
               "size": [
-                6.47868729,
-                3.65810156,
-                11.513319
+                6.478687,
+                3.65810132,
+                11.5133162
               ],
               "rotation": [
-                -0.12263266,
-                -0.113986827,
-                -0.0178780612,
-                -0.9857224
+                0.122115783,
+                0.14007,
+                0.0211217422,
+                0.982355356
               ],
               "velocity": [
                 0.0,
@@ -124,6 +111,19 @@
               ]
             }
           ]
+        },
+        {
+          "@type": "type.unity.com/unity.solo.DepthAnnotation",
+          "id": "Depth",
+          "sensorId": "camera1",
+          "description": "Generates a 32-bit depth image in EXR format where each pixel contains the actual distance in Unity units (usually meters) from the camera to the object in the scene.",
+          "measurementStrategy": "Depth",
+          "imageFormat": "Exr",
+          "dimension": [
+            650.0,
+            400.0
+          ],
+          "filename": "step0.camera1.Depth.exr"
         }
       ]
     },
@@ -182,20 +182,20 @@
               "labelId": 1,
               "labelName": "Module_Construction",
               "translation": [
-                15.2130661,
-                3.52335286,
-                62.7721252
+                -26.7947063,
+                7.15433168,
+                47.2106247
               ],
               "size": [
-                6.47868729,
-                3.65810156,
-                11.513319
+                6.478687,
+                3.65810132,
+                11.5133162
               ],
               "rotation": [
-                -0.12263266,
-                -0.113986827,
-                -0.0178780612,
-                -0.9857224
+                0.122115783,
+                0.14007,
+                0.0211217422,
+                0.982355356
               ],
               "velocity": [
                 0.0,
@@ -220,7 +220,7 @@
       "sensorId": "",
       "annotationId": "",
       "description": "Iteration information for dataset sequences",
-      "value": 62
+      "value": 51
     },
     {
       "@type": "type.unity.com/unity.solo.GenericMetric",
