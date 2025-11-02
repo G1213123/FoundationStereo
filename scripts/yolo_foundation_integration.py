@@ -251,7 +251,7 @@ def main():
     parser.add_argument('--valid_iters', type=int, default=32, help='FoundationStereo iterations')
     parser.add_argument('--hiera', type=int, default=0, help='Hierarchical inference')
     parser.add_argument('--min_depth', type=float, default=0.1, help='Minimum depth (meters)')
-    parser.add_argument('--max_depth', type=float, default=10.0, help='Maximum depth (meters)')
+    parser.add_argument('--max_depth', type=float, default=1000.0, help='Maximum depth (meters)')
     
     # Output
     parser.add_argument('--output_dir', type=str, default='./output_3d_blocks', help='Output directory')
