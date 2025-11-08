@@ -1,0 +1,300 @@
+{
+  "frame": 53,
+  "sequence": 52,
+  "step": 0,
+  "timestamp": 0.0,
+  "captures": [
+    {
+      "@type": "type.unity.com/unity.solo.RGBCamera",
+      "id": "camera1",
+      "description": "",
+      "position": [
+        107.53,
+        22.09,
+        56.78
+      ],
+      "rotation": [
+        -0.1453501,
+        -0.5454192,
+        -0.10107033,
+        0.8192534
+      ],
+      "velocity": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "acceleration": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "filename": "step0.camera1.png",
+      "imageFormat": "Png",
+      "dimension": [
+        650.0,
+        400.0
+      ],
+      "projection": "Perspective",
+      "matrix": [
+        0.7812499,
+        0.0,
+        0.0,
+        0.0,
+        1.269531,
+        0.0,
+        0.0,
+        0.0,
+        -1.0006001
+      ],
+      "annotations": [
+        {
+          "@type": "type.unity.com/unity.solo.InstanceSegmentationAnnotation",
+          "id": "instance segmentation",
+          "sensorId": "camera1",
+          "description": "Produces an instance segmentation image for each frame. The image will render the pixels of each labeled object in a distinct color.",
+          "imageFormat": "Png",
+          "dimension": [
+            650.0,
+            400.0
+          ],
+          "filename": "step0.camera1.instance segmentation.png",
+          "instances": [
+            {
+              "instanceId": 3,
+              "labelId": 2,
+              "labelName": "Socket",
+              "color": [
+                0,
+                74,
+                255,
+                255
+              ]
+            }
+          ]
+        },
+        {
+          "@type": "type.unity.com/unity.solo.BoundingBox3DAnnotation",
+          "id": "bounding box 3D_0",
+          "sensorId": "camera1",
+          "description": "Produces 3D bounding box ground truth data for all visible objects that bear a label defined in this labeler's associated label configuration.",
+          "values": [
+            {
+              "instanceId": 3,
+              "labelId": 2,
+              "labelName": "Socket",
+              "translation": [
+                -0.255134046,
+                1.38286185,
+                2.58020568
+              ],
+              "size": [
+                0.3000192,
+                0.3000001,
+                0.299998224
+              ],
+              "rotation": [
+                -0.174531013,
+                0.184591636,
+                0.02967883,
+                -0.9667391
+              ],
+              "velocity": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "acceleration": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          ]
+        },
+        {
+          "@type": "type.unity.com/unity.solo.DepthAnnotation",
+          "id": "Depth",
+          "sensorId": "camera1",
+          "description": "Generates a 32-bit depth image in EXR format where each pixel contains the actual distance in Unity units (usually meters) from the camera to the object in the scene.",
+          "measurementStrategy": "Depth",
+          "imageFormat": "Exr",
+          "dimension": [
+            650.0,
+            400.0
+          ],
+          "filename": "step0.camera1.Depth.exr"
+        }
+      ]
+    },
+    {
+      "@type": "type.unity.com/unity.solo.RGBCamera",
+      "id": "camera2",
+      "description": "",
+      "position": [
+        107.914604,
+        22.0829487,
+        57.7030525
+      ],
+      "rotation": [
+        -0.1453501,
+        -0.5454192,
+        -0.10107033,
+        0.8192534
+      ],
+      "velocity": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "acceleration": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "filename": "step0.camera2.png",
+      "imageFormat": "Png",
+      "dimension": [
+        650.0,
+        400.0
+      ],
+      "projection": "Perspective",
+      "matrix": [
+        0.7812499,
+        0.0,
+        0.0,
+        0.0,
+        1.269531,
+        0.0,
+        0.0,
+        0.0,
+        -1.0006001
+      ],
+      "annotations": [
+        {
+          "@type": "type.unity.com/unity.solo.BoundingBox3DAnnotation",
+          "id": "bounding box 3D",
+          "sensorId": "camera2",
+          "description": "Produces 3D bounding box ground truth data for all visible objects that bear a label defined in this labeler's associated label configuration.",
+          "values": [
+            {
+              "instanceId": 3,
+              "labelId": 2,
+              "labelName": "Socket",
+              "translation": [
+                -1.255134,
+                1.38286185,
+                2.58020568
+              ],
+              "size": [
+                0.3000192,
+                0.3000001,
+                0.299998224
+              ],
+              "rotation": [
+                -0.174531013,
+                0.184591636,
+                0.02967883,
+                -0.9667391
+              ],
+              "velocity": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "acceleration": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "metrics": [
+    {
+      "@type": "type.unity.com/unity.solo.GenericMetric",
+      "id": "scenario_iteration",
+      "sensorId": "",
+      "annotationId": "",
+      "description": "Iteration information for dataset sequences",
+      "value": 51
+    },
+    {
+      "@type": "type.unity.com/unity.solo.GenericMetric",
+      "id": "random-seed",
+      "sensorId": "",
+      "annotationId": "",
+      "description": "The random seed used to initialize the random state of the simulation. Only triggered once per simulation.",
+      "value": 539662031
+    },
+    {
+      "@type": "type.unity.com/unity.solo.GenericMetric",
+      "id": "metadata",
+      "sensorId": "",
+      "annotationId": "",
+      "description": "Metadata labeler",
+      "values": [
+        {
+          "instances": [
+            {
+              "instanceId": "1",
+              "transformRecord": {
+                "rotationQuaternion": [
+                  -1.62259454E-07,
+                  0.700459063,
+                  1.41511833E-07,
+                  -0.713692844
+                ],
+                "localRotationQuaternion": [
+                  0.0,
+                  2.10734221E-08,
+                  0.0,
+                  1.0
+                ],
+                "rotationEuler": [
+                  1.91140566E-06,
+                  271.072327,
+                  -2.4597306E-05
+                ],
+                "localRotationEuler": [
+                  0.0,
+                  2.41483622E-06,
+                  0.0
+                ],
+                "position": [
+                  105.748306,
+                  24.136961,
+                  57.20135
+                ],
+                "positionLocal": [
+                  -0.13609,
+                  0.0892,
+                  -0.0741
+                ],
+                "parentName": "LockSocket (3)",
+                "forwardVector": [
+                  -0.999825239,
+                  -3.33603225E-08,
+                  0.01871419
+                ],
+                "lossyScale": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "localScale": [
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

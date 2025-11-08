@@ -1,0 +1,9 @@
+Block 3D Coordinates (Camera Frame)
+==================================================
+
+Block 0:
+  Confidence: 0.9152
+  2D Bounding Box: [280  35 320  87]
+  3D Centroid (m): [-2.5907, -12.9755, 2.4974]
+  3D Size (m): [4.9451, 4.0389, 0.5354]
+  Valid 3D Points: 1701
