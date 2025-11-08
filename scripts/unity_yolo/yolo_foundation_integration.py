@@ -128,8 +128,8 @@ def extract_stereo_from_unity_json(left_image_path: str, right_image_path: str):
 
         # Derive pixel focal lengths from normalized projection terms.
         # Assumption validated by aspect ratio: m11/m00 ~= width/height.
-        fx = 25
-        fy = 25
+        fx = m00
+        fy = m11
         cx = 0.5 * width
         cy = 0.5 * height
 
@@ -669,7 +669,7 @@ def main():
     disparity, left_img = run_foundation_stereo(foundation_model, args.left_image, args.right_image, args)
     
     # Convert disparity to depth using fx and baseline from chosen source
-    depth = K[0,0] * baseline / (np.maximum(disparity, 1e-3)) * 10
+    depth = K[0,0] * K[0,1] * baseline / (np.maximum(disparity, 1e-3))
     logging.info(f"Depth computed with fx={K[0,0]:.3f}, baseline={baseline:.6f} m")
     # Enforce maximum usable range: values above 100m are marked invalid (set to 0)
     depth = np.where(depth > 100.0, 0.0, depth)
