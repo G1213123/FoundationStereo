@@ -28,6 +28,9 @@ class UnityInstanceSegmentationYOLO:
         self.unity_project_path = os.getenv('UNITY_PROJECT_PATH', '')
         self.unity_dataset_name = os.getenv('UNITY_DATASET_NAME', 'solo_9')
         
+        # Real image augmentation paths
+        self.real_image_path = os.getenv('REAL_IMAGE_PATH', 'datasets/real_image')
+        
         # Other paths
         self.foundation_stereo_root = os.getenv('FOUNDATION_STEREO_ROOT', '.')
         self.python_env = os.getenv('PYTHON_ENV', 'python')
@@ -42,6 +45,15 @@ class UnityInstanceSegmentationYOLO:
         self.batch_size = int(os.getenv('BATCH_SIZE', '8'))
         self.image_size = int(os.getenv('IMAGE_SIZE', '640'))
         self.device = os.getenv('DEVICE', '0')
+        self.patience = int(os.getenv('PATIENCE', '10'))
+        
+        # Regularization parameters
+        self.dropout = float(os.getenv('DROPOUT', '0.0'))
+        self.weight_decay = float(os.getenv('WEIGHT_DECAY', '0.0005'))
+        self.label_smoothing = float(os.getenv('LABEL_SMOOTHING', '0.0'))
+        self.mosaic = float(os.getenv('MOSAIC', '1.0'))
+        self.mixup = float(os.getenv('MIXUP', '0.0'))
+        self.augment = bool(int(os.getenv('AUGMENT', '1')))
         
         # Output directories
         self.runs_dir = os.getenv('RUNS_DIR', './runs')
@@ -107,7 +119,164 @@ class UnityInstanceSegmentationYOLO:
         
         print(f"\\n✓ Extracted {len(extracted_data)} image-segmentation pairs")
         return extracted_data
-    
+    def load_real_images(self, real_image_path: str, max_images: int = None, target_classes: List[str] = None) -> List[Dict]:
+        """
+        Load real images with COCO JSON format labels to augment training dataset
+        
+        Args:
+            real_image_path: Path to real_image directory containing images and _annotations.coco.json
+            max_images: Maximum number of real images to use (None = use all)
+            target_classes: List of class names (must match Unity classes for consistency)
+        
+        Returns:
+            List of processed real image data compatible with Unity data format
+        """
+        real_path = Path(real_image_path)
+        coco_json = real_path / '_annotations.coco.json'
+        
+        if not coco_json.exists():
+            print(f"❌ COCO annotation file not found: {coco_json}")
+            return []
+        
+        print(f"\n🔍 Loading real images from COCO format: {real_image_path}")
+        
+        # Load COCO annotations
+        try:
+            with open(coco_json, 'r') as f:
+                coco_data = json.load(f)
+        except Exception as e:
+            print(f"❌ Error loading COCO JSON: {e}")
+            return []
+        
+        # Build category mapping
+        categories = {cat['id']: cat['name'] for cat in coco_data['categories']}
+        print(f"Categories found: {categories}")
+        
+        # Build image mapping
+        images_dict = {img['id']: img for img in coco_data['images']}
+        
+        # Group annotations by image_id
+        annotations_by_image = {}
+        for ann in coco_data['annotations']:
+            img_id = ann['image_id']
+            if img_id not in annotations_by_image:
+                annotations_by_image[img_id] = []
+            annotations_by_image[img_id].append(ann)
+        
+        # Limit number of images if specified
+        image_ids = list(annotations_by_image.keys())
+        if max_images is not None and max_images > 0:
+            image_ids = image_ids[:max_images]
+        
+        print(f"Loading {len(image_ids)} real images with annotations")
+        
+        real_data = []
+        
+        for img_id in image_ids:
+            img_info = images_dict[img_id]
+            img_file = real_path / img_info['file_name']
+            
+            if not img_file.exists():
+                print(f"⚠ Image file not found: {img_file.name}, skipping")
+                continue
+            
+            # Load image
+            rgb_img = cv2.imread(str(img_file))
+            if rgb_img is None:
+                print(f"⚠ Could not load {img_file.name}, skipping")
+                continue
+            
+            img_height = img_info['height']
+            img_width = img_info['width']
+            
+            # Process annotations for this image
+            instances = []
+            for ann in annotations_by_image[img_id]:
+                try:
+                    # Get class name
+                    class_name = categories[ann['category_id']]
+                    
+                    # Map to target classes if provided
+                    if target_classes:
+                        # Try exact match first
+                        if class_name not in target_classes:
+                            # Try fuzzy matching
+                            matched = False
+                            for target in target_classes:
+                                if target.lower() in class_name.lower() or class_name.lower() in target.lower():
+                                    class_name = target
+                                    matched = True
+                                    break
+                            if not matched:
+                                continue  # Skip if no match
+                    
+                    # COCO segmentation format: [[x1, y1, x2, y2, ...]]
+                    if 'segmentation' not in ann or not ann['segmentation']:
+                        continue
+                    
+                    segmentation = ann['segmentation']
+                    if isinstance(segmentation, dict):  # RLE format
+                        print(f"⚠ RLE segmentation format not supported, skipping")
+                        continue
+                    
+                    # Get the first polygon (COCO can have multiple polygons per annotation)
+                    polygon_pixels = segmentation[0]
+                    
+                    # Convert to normalized coordinates
+                    normalized_coords = []
+                    pixel_coords = []
+                    for i in range(0, len(polygon_pixels), 2):
+                        x_pixel = polygon_pixels[i]
+                        y_pixel = polygon_pixels[i+1]
+                        normalized_coords.append(x_pixel / img_width)
+                        normalized_coords.append(y_pixel / img_height)
+                        pixel_coords.append((x_pixel, y_pixel))
+                    
+                    if len(normalized_coords) < 6:  # Need at least 3 points
+                        continue
+                    
+                    # Get bounding box from COCO (format: [x, y, width, height])
+                    bbox_coco = ann['bbox']
+                    bbox = [int(bbox_coco[0]), int(bbox_coco[1]), int(bbox_coco[2]), int(bbox_coco[3])]
+                    
+                    # Create mask from polygon for pixel count
+                    pts = np.array(pixel_coords, dtype=np.int32)
+                    mask = np.zeros((img_height, img_width), dtype=np.uint8)
+                    cv2.fillPoly(mask, [pts], 255)
+                    pixel_count = np.sum(mask > 0)
+                    
+                    instances.append({
+                        'instance_id': ann['id'],
+                        'class_name': class_name,
+                        'polygon': normalized_coords,
+                        'bbox': bbox,
+                        'pixel_count': int(pixel_count),
+                        'mask': mask,
+                        'color': (0, 0, 0)  # Placeholder
+                    })
+                    
+                except Exception as e:
+                    print(f"⚠ Error processing annotation {ann.get('id', 'unknown')}: {e}")
+                    continue
+            
+            if instances:
+                real_data.append({
+                    'rgb_file': str(img_file),
+                    'seg_file': str(coco_json),
+                    'sequence': 'real_image',
+                    'step': img_file.stem,
+                    'camera_id': 'real',
+                    'image_size': [img_width, img_height],
+                    'instances': instances,
+                    'rgb_image': rgb_img,
+                    'seg_image': None  # Not needed for real images
+                })
+                print(f"✓ Loaded {img_file.name}: {len(instances)} instances")
+            else:
+                print(f"⚠ No valid instances in {img_file.name}")
+        
+        print(f"✓ Loaded {len(real_data)} real images with annotations from COCO format")
+        return real_data
     def _load_instance_mapping(self, seq_dir: Path) -> Dict:
         """Load instance ID to class name mapping from JSON metadata with color channel info"""
         
@@ -323,16 +492,34 @@ class UnityInstanceSegmentationYOLO:
     def create_yolo_dataset(self, 
                            extracted_data: List[Dict],
                            train_split: float = 0.8,
-                           val_split: float = 0.15) -> bool:
-        """Create YOLO dataset from extracted Unity instance data"""
+                           val_split: float = 0.15,
+                           real_data: List[Dict] = None) -> bool:
+        """Create YOLO dataset from extracted Unity instance data and optional real images
+        
+        Args:
+            extracted_data: Unity synthetic data
+            train_split: Fraction of data for training
+            val_split: Fraction of data for validation
+            real_data: Optional real image data to augment training set
+        """
         
         if not extracted_data:
             print("❌ No extracted data to process")
             return False
         
+        # Combine Unity and real data if available
+        if real_data:
+            print(f"\n📊 Combining datasets:")
+            print(f"  Unity synthetic: {len(extracted_data)} images")
+            print(f"  Real images: {len(real_data)} images")
+            all_data = extracted_data + real_data
+            print(f"  Total: {len(all_data)} images")
+        else:
+            all_data = extracted_data
+        
         # Get unique class names
         all_classes = set()
-        for data in extracted_data:
+        for data in all_data:
             for instance in data['instances']:
                 all_classes.add(instance['class_name'])
         
@@ -347,14 +534,14 @@ class UnityInstanceSegmentationYOLO:
             os.makedirs(f"{self.dataset_root}/labels/{split}", exist_ok=True)
         
         # Shuffle and split data
-        np.random.shuffle(extracted_data)
-        n_total = len(extracted_data)
+        np.random.shuffle(all_data)
+        n_total = len(all_data)
         n_train = int(n_total * train_split)
         n_val = int(n_total * val_split)
         
-        train_data = extracted_data[:n_train]
-        val_data = extracted_data[n_train:n_train + n_val]
-        test_data = extracted_data[n_train + n_val:]
+        train_data = all_data[:n_train]
+        val_data = all_data[n_train:n_train + n_val]
+        test_data = all_data[n_train + n_val:]
         
         # Process each split
         for split_name, split_data in [('train', train_data), ('val', val_data), ('test', test_data)]:
@@ -430,15 +617,15 @@ class UnityInstanceSegmentationYOLO:
         """Train YOLO model on Unity instance segmentation data"""
         
         print(f"🚀 Starting YOLO training on Unity instance segmentation data...")
-        print(f"Model: YOLOv8{self.model_size}-seg")
+        print(f"Model: YOLOv11{self.model_size}-seg")
         print(f"Epochs: {self.epochs}")
         print(f"Batch size: {self.batch_size}")
         print(f"Image size: {self.image_size}")
         
         # Load model
-        model = YOLO(f'yolov8{self.model_size}-seg.pt')
+        model = YOLO(f'yolo{self.model_size}-seg.pt')
         
-        # Train
+        # Train with regularization
         results = model.train(
             data=f'{self.dataset_root}/dataset.yaml',
             epochs=self.epochs,
@@ -449,8 +636,8 @@ class UnityInstanceSegmentationYOLO:
             save=True,
             plots=True,
             device=self.device,
-            patience=10,  # Early stopping
-            save_period=5  # Save every 5 epochs
+            patience=self.patience,  # Early stopping
+            save_period=5,  # Save every 5 epochs
         )
         
         best_model = f'{self.runs_dir}/{self.project_name}/weights/best.pt'
@@ -530,6 +717,11 @@ def main():
                        help="Target class names")
     parser.add_argument("--max_sequences", type=int, default=10, 
                        help="Maximum number of sequences to process")
+    parser.add_argument("--max_real_images", type=int, default=0, 
+                       help="Maximum number of real images to use for augmentation (0 = none)")
+    parser.add_argument("--real_image_path", type=str, 
+                       default="datasets/real_image",
+                       help="Path to real images directory")
     parser.add_argument("--config", type=str, default=".env", help="Configuration file")
     
     args = parser.parse_args()
@@ -595,14 +787,23 @@ def main():
     elif args.action == 'train':
         print("🔄 Full training pipeline...")
         
-        # Extract data
+        # Extract Unity data
         extracted_data = trainer.extract_unity_instance_data(solo_path, args.target_classes, args.max_sequences)
         if not extracted_data:
             print("❌ No data extracted!")
             return
         
-        # Create dataset
-        success = trainer.create_yolo_dataset(extracted_data)
+        # Load real images if specified
+        real_data = None
+        if args.max_real_images > 0:
+            real_data = trainer.load_real_images(
+                args.real_image_path,
+                max_images=args.max_real_images,
+                target_classes=args.target_classes
+            )
+        
+        # Create dataset (combining Unity and real data)
+        success = trainer.create_yolo_dataset(extracted_data, real_data=real_data)
         if not success:
             print("❌ Dataset creation failed!")
             return
@@ -647,20 +848,31 @@ def main():
     elif args.action == 'full':
         print("🚀 Full Unity Instance Segmentation YOLO Pipeline")
         
-        # Step 1: Extract data
+        # Step 1: Extract Unity data
         print("\\nStep 1: Extracting Unity instance segmentation data...")
         extracted_data = trainer.extract_unity_instance_data(solo_path, args.target_classes, args.max_sequences)
         if not extracted_data:
             print("❌ No data extracted!")
             return
         
+        # Step 1.5: Load real images if specified
+        real_data = None
+        if args.max_real_images > 0:
+            print("\\nStep 1.5: Loading real images for augmentation...")
+            real_data = trainer.load_real_images(
+                args.real_image_path,
+                max_images=args.max_real_images,
+                target_classes=args.target_classes
+            )
+        
         # Step 2: Visualize samples
         print("\\nStep 2: Creating visualizations...")
-        trainer.visualize_training_data(extracted_data, num_samples=5)
+        all_samples = extracted_data + (real_data if real_data else [])
+        trainer.visualize_training_data(all_samples, num_samples=5)
         
         # Step 3: Create dataset
         print("\\nStep 3: Creating YOLO dataset...")
-        success = trainer.create_yolo_dataset(extracted_data)
+        success = trainer.create_yolo_dataset(extracted_data, real_data=real_data)
         if not success:
             print("❌ Dataset creation failed!")
             return

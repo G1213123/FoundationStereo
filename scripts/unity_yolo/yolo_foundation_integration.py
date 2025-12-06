@@ -304,14 +304,16 @@ def extract_block_coordinates(detections, depth_map, K, min_depth=0.1, max_depth
     
     return block_coordinates
 
-def visualize_results(image_path, detections, block_coordinates, output_dir, disparity_map=None, depth_map=None, camera_info=None, depth_vis_max=None):
+def visualize_results(image_path, detections, block_coordinates, output_dir, disparity_map=None, depth_map=None, camera_info=None, depth_vis_max=None, minimal=False):
     """Visualize detection results and save multiple visualization formats"""
     # Load original image
     img = cv2.imread(image_path)
     img_height, img_width = img.shape[:2]
     
     # Create annotated version
-    annotated_img = img.copy()
+    if not minimal:
+        annotated_img = img.copy()
+    
     # Prepare to collect segmentation contours for reuse on overlays
     mask_contours = []  # list of tuples: (contours, color)
     # Distinct colors for different instances (BGR)
@@ -325,24 +327,37 @@ def visualize_results(image_path, detections, block_coordinates, output_dir, dis
         (255, 0, 0),    # blue
     ]
     
+    # Find detection with highest confidence
+    best_idx = -1
+    if len(detections) > 0:
+        best_idx = max(range(len(detections)), key=lambda i: detections[i]['confidence'])
+
     # Draw 2D detections
     for i, detection in enumerate(detections):
-        box = detection['box'].astype(int)
-        confidence = detection['confidence']
-        x1, y1, x2, y2 = box
-        
-        # Draw bounding box
-        cv2.rectangle(annotated_img, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        
-        # Add label
-        label = f"Block {i}: {confidence:.3f}"
-        cv2.putText(annotated_img, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-        
-        # Add 3D info if available
-        if i < len(block_coordinates):
-            centroid = block_coordinates[i]['centroid_3d']
-            coord_text = f"3D: [{centroid[0]:.2f}, {centroid[1]:.2f}, {centroid[2]:.2f}]m"
-            cv2.putText(annotated_img, coord_text, (x1, y2+20), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1)
+        # Only draw the detection with the highest confidence
+        if i != best_idx:
+            continue
+
+        if not minimal:
+            box = detection['box'].astype(int)
+            confidence = detection['confidence']
+            x1, y1, x2, y2 = box
+            
+            # Draw bounding box
+            cv2.rectangle(annotated_img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            
+            # Add label
+            label = f"Block {i}: {confidence:.3f}"
+            cv2.putText(annotated_img, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+            
+            # Add 3D info if available
+            # Find corresponding block info by detection_id
+            block_info = next((b for b in block_coordinates if b['detection_id'] == i), None)
+            
+            if block_info:
+                centroid = block_info['centroid_3d']
+                coord_text = f"3D: [{centroid[0]:.2f}, {centroid[1]:.2f}, {centroid[2]:.2f}]m"
+                cv2.putText(annotated_img, coord_text, (x1, y2+20), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1)
         
         # If we have a segmentation mask, draw its edge/contours
         mask = detection.get('mask')
@@ -354,16 +369,18 @@ def visualize_results(image_path, detections, block_coordinates, output_dir, dis
             contours, _ = cv2.findContours(mask_bin, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             color = contour_colors[i % len(contour_colors)]
             if contours:
-                cv2.drawContours(annotated_img, contours, -1, color, 2)
+                if not minimal:
+                    cv2.drawContours(annotated_img, contours, -1, color, 2)
                 mask_contours.append((contours, color))
     
     # Save annotated image
-    cv2.imwrite(f'{output_dir}/blocks_3d_detection.jpg', annotated_img)
-    logging.info(f"Annotated image saved to {output_dir}/blocks_3d_detection.jpg")
+    if not minimal:
+        cv2.imwrite(f'{output_dir}/blocks_3d_detection.jpg', annotated_img)
+        logging.info(f"Annotated image saved to {output_dir}/blocks_3d_detection.jpg")
 
     
     # Create disparity map visualization if provided
-    if disparity_map is not None:
+    if disparity_map is not None and not minimal:
         # Use the same visualization as the original FoundationStereo demo
         from Utils import vis_disparity
         
@@ -462,7 +479,7 @@ def visualize_results(image_path, detections, block_coordinates, output_dir, dis
         logging.info(f"Comprehensive visualization saved to {output_dir}/comprehensive_visualization.jpg")
 
     # Create depth map visualization if provided (in meters)
-    if depth_map is not None:
+    if depth_map is not None and not minimal:
         depth = depth_map.copy()
         valid = np.isfinite(depth) & (depth > 0)
         if valid.any():
@@ -535,10 +552,11 @@ def visualize_results(image_path, detections, block_coordinates, output_dir, dis
         cv2.drawContours(edge_map, contours, -1, 255, 2)
     # Save edge map as .npy and as 8-bit PNG
     np.save(os.path.join(raw_dir, 'edges.npy'), edge_map)
-    cv2.imwrite(os.path.join(output_dir, 'edges.png'), edge_map)
+    if not minimal:
+        cv2.imwrite(os.path.join(output_dir, 'edges.png'), edge_map)
     
     # Create and save point cloud
-    if block_coordinates:
+    if block_coordinates and not minimal:
         # Combine all block points
         all_points = []
         all_colors = []
@@ -567,13 +585,154 @@ def visualize_results(image_path, detections, block_coordinates, output_dir, dis
             o3d.io.write_point_cloud(f'{output_dir}/blocks_3d.ply', pcd)
             logging.info(f"3D point cloud saved to {output_dir}/blocks_3d.ply")
 
+def process_stereo_pair(yolo_model, foundation_model, left_image, right_image, output_dir, args):
+    """Process a single stereo pair"""
+    # Prefer Unity JSON for stereo parameters (fx, fy, cx, cy, baseline)
+    stereo_params = extract_stereo_from_unity_json(left_image, right_image)
+    if stereo_params is not None:
+        logging.info("Using Unity JSON stereo parameters for depth computation")
+        fx = stereo_params['fx'] * args.scale
+        fy = stereo_params['fy'] * args.scale
+        cx = stereo_params['cx'] * args.scale
+        cy = stereo_params['cy'] * args.scale
+        baseline = stereo_params['baseline_m']
+        # Build K from JSON-derived params (note: depth backprojection uses these)
+        K = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=np.float32)
+    else:
+        logging.error("Could not extract stereo parameters from Unity JSON. Cannot compute depth.")
+        return
+
+    # Step 1: Run YOLO segmentation
+    logging.info("🎯 Running YOLO object detection...")
+    detections = get_segmentation_masks(yolo_model, left_image, args.conf_threshold)
+    logging.info(f"Found {len(detections)} detections")
+    
+    if len(detections) == 0:
+        logging.warning("No objects detected by YOLO!")
+        return
+    
+    # Step 2: Run FoundationStereo
+    logging.info("🔍 Running FoundationStereo disparity estimation...")
+    disparity, left_img = run_foundation_stereo(foundation_model, left_image, right_image, args)
+    
+    # Convert disparity to depth using fx and baseline from chosen source
+    depth = K[0,0] * baseline / (np.maximum(disparity, 1e-3))
+    logging.info(f"Depth computed with fx={K[0,0]:.3f}, baseline={baseline:.6f} m")
+    # Enforce maximum usable range: values above 1000m are marked invalid (set to 0)
+    depth = np.where(depth > 1000.0, 0.0, depth)
+    
+    # Step 3: Extract 3D coordinates
+    logging.info("📐 Extracting 3D block coordinates...")
+    block_coordinates = extract_block_coordinates(detections, depth, K, args.min_depth, args.max_depth)
+    
+    # Step 4: Save results
+    logging.info("💾 Saving results...")
+    
+    # Save numerical results
+    results_file = f'{output_dir}/block_coordinates.txt'
+    with open(results_file, 'w') as f:
+        f.write("Block 3D Coordinates (Camera Frame)\n")
+        f.write("="*50 + "\n")
+        for i, block in enumerate(block_coordinates):
+            f.write(f"\nBlock {i}:\n")
+            f.write(f"  Confidence: {block['confidence']:.4f}\n")
+            f.write(f"  2D Bounding Box: {block['bbox_2d']}\n")
+            f.write(f"  3D Centroid (m): [{block['centroid_3d'][0]:.4f}, {block['centroid_3d'][1]:.4f}, {block['centroid_3d'][2]:.4f}]\n")
+            f.write(f"  3D Size (m): [{block['bbox_3d_size'][0]:.4f}, {block['bbox_3d_size'][1]:.4f}, {block['bbox_3d_size'][2]:.4f}]\n")
+            f.write(f"  Valid 3D Points: {block['num_3d_points']}\n")
+    
+    logging.info(f"Results saved to {results_file}")
+    
+    # Extract camera info from Unity JSON next to the left image (if available)
+    camera_info = extract_camera_info_from_unity_json(left_image)
+    if camera_info and camera_info.get('K') is not None:
+        logging.info(f"Unity camera matrix found in JSON for {camera_info.get('id')}")
+    else:
+        logging.info("Unity camera matrix not found; proceeding with computed depth visualization")
+
+    # Save visualizations (add depth and camera info)
+    visualize_results(
+        left_image,
+        detections,
+        block_coordinates,
+        output_dir,
+        disparity_map=disparity,
+        depth_map=depth,
+        camera_info=camera_info,
+        depth_vis_max=args.depth_vis_max,
+        minimal=getattr(args, 'minimal_output', False)
+    )
+    
+    # Save raw matrices to raw/
+    raw_dir = os.path.join(output_dir, 'raw')
+    os.makedirs(raw_dir, exist_ok=True)
+    # Depth (float32 meters)
+    depth_f32 = depth.astype(np.float32)
+    np.save(os.path.join(raw_dir, 'depth.npy'), depth_f32)
+    
+    if not getattr(args, 'minimal_output', False):
+        # Save EXR for viewer compatibility
+        depth_exr_path = os.path.join(raw_dir, 'depth.exr')
+        if save_exr_float32(depth_exr_path, depth_f32):
+            logging.info(f"Depth EXR saved to {depth_exr_path}")
+        else:
+            logging.warning("Failed to save depth EXR with imageio. Kept depth.npy/depth_mm.png.")
+        # Also save a 16-bit PNG for compatibility: scale by 1000 to millimeters (clipped)
+        depth_mm = np.clip(depth_f32 * 1000.0, 0, np.iinfo(np.uint16).max).astype(np.uint16)
+        cv2.imwrite(os.path.join(output_dir, 'depth_mm.png'), depth_mm)
+        # Disparity (float32 pixels)
+        disparity_f32 = disparity.astype(np.float32)
+        np.save(os.path.join(raw_dir, 'disparity.npy'), disparity_f32)
+        # Also save disparity as EXR for convenience
+        disp_exr_path = os.path.join(raw_dir, 'disparity.exr')
+        if save_exr_float32(disp_exr_path, disparity_f32):
+            logging.info(f"Disparity EXR saved to {disp_exr_path}")
+        else:
+            logging.warning("Failed to save disparity EXR with imageio. Kept disparity.npy/disparity_u16.png.")
+        # Optional: 16-bit PNG by scaling (preserve 0..65535 range)
+        disp_scaled = np.clip(disparity_f32, 0, 65535).astype(np.uint16)
+        cv2.imwrite(os.path.join(output_dir, 'disparity_u16.png'), disp_scaled)
+    
+    # Minimal metadata for later processing
+    meta = {
+        'K': K.tolist(),
+        'baseline_m': float(baseline),
+        'left_image': os.path.abspath(left_image),
+        'right_image': os.path.abspath(right_image),
+        'width': int(depth.shape[1]),
+        'height': int(depth.shape[0]),
+        'scale': float(args.scale),
+        'depth_units': 'meters',
+        'depth_png_units': 'millimeters',
+        'disparity_units': 'pixels',
+        'depth_exr_path': os.path.join(raw_dir, 'depth.exr') if not getattr(args, 'minimal_output', False) else None,
+        'disparity_exr_path': os.path.join(raw_dir, 'disparity.exr') if not getattr(args, 'minimal_output', False) else None
+    }
+    with open(os.path.join(raw_dir, 'meta.json'), 'w') as f:
+        json.dump(meta, f, indent=2)
+    
+    logging.info("✅ Integration complete!")
+    logging.info(f"📁 Check {output_dir} for all results")
+    
+    # Print summary
+    print("\n" + "="*60)
+    print("🎉 YOLO + FoundationStereo Integration Results")
+    print("="*60)
+    print(f"📊 Detected Objects: {len(detections)}")
+    print(f"📐 3D Coordinates Extracted: {len(block_coordinates)}")
+    print(f"📁 Results saved to: {output_dir}")
+    print("="*60)
+    
+    for i, block in enumerate(block_coordinates):
+        x, y, z = block['centroid_3d']
+        print(f"🧱 Block {i}: Position=({x:.3f}, {y:.3f}, {z:.3f})m, Confidence={block['confidence']:.3f}")
+
 def main():
     parser = argparse.ArgumentParser(description='YOLO + FoundationStereo Integration')
     
     # Image paths
     parser.add_argument('--left_image', type=str, required=True, help='Left stereo image path')
     parser.add_argument('--right_image', type=str, required=True, help='Right stereo image path')
-    parser.add_argument('--intrinsic_file', type=str, required=True, help='Camera intrinsics file')
     
     # Model paths
     parser.add_argument('--yolo_model', type=str, help='YOLO model path (uses .env if not specified)')
@@ -589,6 +748,7 @@ def main():
     parser.add_argument('--min_depth', type=float, default=0.1, help='Minimum depth (meters)')
     parser.add_argument('--max_depth', type=float, default=10.0, help='Maximum depth (meters)')
     parser.add_argument('--depth_vis_max', type=float, default=500.0, help='Max depth (m) to visualize; farther depths blacked out')
+    parser.add_argument('--minimal_output', action='store_true', help='Generate minimal output (only depth.npy and edges.npy)')
     
     # Output
     parser.add_argument('--output_dir', type=str, default='../run_files/output_3d_blocks', help='Output directory')
@@ -600,7 +760,6 @@ def main():
     os.makedirs(input_dir, exist_ok=True)
     shutil.copy2(args.left_image, os.path.join(input_dir, os.path.basename(args.left_image)))
     shutil.copy2(args.right_image, os.path.join(input_dir, os.path.basename(args.right_image)))
-    shutil.copy2(args.intrinsic_file, os.path.join(input_dir, os.path.basename(args.intrinsic_file)))
     for file in ['step0.camera1.Depth.exr', 'step0.frame_data.json']:
         src_path = os.path.join(os.path.dirname(args.left_image), file)
         if os.path.exists(src_path):
@@ -638,143 +797,7 @@ def main():
     foundation_model.cuda()
     foundation_model.eval()
     
-    # Prefer Unity JSON for stereo parameters (fx, fy, cx, cy, baseline)
-    stereo_params = extract_stereo_from_unity_json(args.left_image, args.right_image)
-    if stereo_params is not None:
-        logging.info("Using Unity JSON stereo parameters for depth computation")
-        fx = stereo_params['fx'] * args.scale
-        fy = stereo_params['fy'] * args.scale
-        cx = stereo_params['cx'] * args.scale
-        cy = stereo_params['cy'] * args.scale
-        baseline = stereo_params['baseline_m']
-        # Build K from JSON-derived params (note: depth backprojection uses these)
-        K = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=np.float32)
-    else:
-        # Fallback to intrinsics file
-        logging.info(f"Loading intrinsics: {args.intrinsic_file}")
-        K, baseline = load_intrinsics(args.intrinsic_file)
-        K[:2] *= args.scale  # Scale intrinsics if image is resized
-    
-    # Step 1: Run YOLO segmentation
-    logging.info("🎯 Running YOLO object detection...")
-    detections = get_segmentation_masks(yolo_model, args.left_image, args.conf_threshold)
-    logging.info(f"Found {len(detections)} detections")
-    
-    if len(detections) == 0:
-        logging.warning("No objects detected by YOLO!")
-        return
-    
-    # Step 2: Run FoundationStereo
-    logging.info("🔍 Running FoundationStereo disparity estimation...")
-    disparity, left_img = run_foundation_stereo(foundation_model, args.left_image, args.right_image, args)
-    
-    # Convert disparity to depth using fx and baseline from chosen source
-    depth = K[0,0] * baseline / (np.maximum(disparity, 1e-3))
-    logging.info(f"Depth computed with fx={K[0,0]:.3f}, baseline={baseline:.6f} m")
-    # Enforce maximum usable range: values above 100m are marked invalid (set to 0)
-    depth = np.where(depth > 100.0, 0.0, depth)
-    
-    # Step 3: Extract 3D coordinates
-    logging.info("📐 Extracting 3D block coordinates...")
-    block_coordinates = extract_block_coordinates(detections, depth, K, args.min_depth, args.max_depth)
-    
-    # Step 4: Save results
-    logging.info("💾 Saving results...")
-    
-    # Save numerical results
-    results_file = f'{args.output_dir}/block_coordinates.txt'
-    with open(results_file, 'w') as f:
-        f.write("Block 3D Coordinates (Camera Frame)\n")
-        f.write("="*50 + "\n")
-        for i, block in enumerate(block_coordinates):
-            f.write(f"\nBlock {i}:\n")
-            f.write(f"  Confidence: {block['confidence']:.4f}\n")
-            f.write(f"  2D Bounding Box: {block['bbox_2d']}\n")
-            f.write(f"  3D Centroid (m): [{block['centroid_3d'][0]:.4f}, {block['centroid_3d'][1]:.4f}, {block['centroid_3d'][2]:.4f}]\n")
-            f.write(f"  3D Size (m): [{block['bbox_3d_size'][0]:.4f}, {block['bbox_3d_size'][1]:.4f}, {block['bbox_3d_size'][2]:.4f}]\n")
-            f.write(f"  Valid 3D Points: {block['num_3d_points']}\n")
-    
-    logging.info(f"Results saved to {results_file}")
-    
-    # Extract camera info from Unity JSON next to the left image (if available)
-    camera_info = extract_camera_info_from_unity_json(args.left_image)
-    if camera_info and camera_info.get('K') is not None:
-        logging.info(f"Unity camera matrix found in JSON for {camera_info.get('id')}")
-    else:
-        logging.info("Unity camera matrix not found; proceeding with computed depth visualization")
-
-    # Save visualizations (add depth and camera info)
-    visualize_results(
-        args.left_image,
-        detections,
-        block_coordinates,
-        args.output_dir,
-        disparity_map=disparity,
-        depth_map=depth,
-        camera_info=camera_info,
-        depth_vis_max=args.depth_vis_max,
-    )
-    
-    # Save raw matrices to raw/
-    raw_dir = os.path.join(args.output_dir, 'raw')
-    os.makedirs(raw_dir, exist_ok=True)
-    # Depth (float32 meters)
-    depth_f32 = depth.astype(np.float32)
-    np.save(os.path.join(raw_dir, 'depth.npy'), depth_f32)
-    # Save EXR for viewer compatibility
-    depth_exr_path = os.path.join(raw_dir, 'depth.exr')
-    if save_exr_float32(depth_exr_path, depth_f32):
-        logging.info(f"Depth EXR saved to {depth_exr_path}")
-    else:
-        logging.warning("Failed to save depth EXR with imageio. Kept depth.npy/depth_mm.png.")
-    # Also save a 16-bit PNG for compatibility: scale by 1000 to millimeters (clipped)
-    depth_mm = np.clip(depth_f32 * 1000.0, 0, np.iinfo(np.uint16).max).astype(np.uint16)
-    cv2.imwrite(os.path.join(args.output_dir, 'depth_mm.png'), depth_mm)
-    # Disparity (float32 pixels)
-    disparity_f32 = disparity.astype(np.float32)
-    np.save(os.path.join(raw_dir, 'disparity.npy'), disparity_f32)
-    # Also save disparity as EXR for convenience
-    disp_exr_path = os.path.join(raw_dir, 'disparity.exr')
-    if save_exr_float32(disp_exr_path, disparity_f32):
-        logging.info(f"Disparity EXR saved to {disp_exr_path}")
-    else:
-        logging.warning("Failed to save disparity EXR with imageio. Kept disparity.npy/disparity_u16.png.")
-    # Optional: 16-bit PNG by scaling (preserve 0..65535 range)
-    disp_scaled = np.clip(disparity_f32, 0, 65535).astype(np.uint16)
-    cv2.imwrite(os.path.join(args.output_dir, 'disparity_u16.png'), disp_scaled)
-    # Minimal metadata for later processing
-    meta = {
-        'K': K.tolist(),
-        'baseline_m': float(baseline),
-        'left_image': os.path.abspath(args.left_image),
-        'right_image': os.path.abspath(args.right_image),
-        'width': int(depth.shape[1]),
-        'height': int(depth.shape[0]),
-        'scale': float(args.scale),
-        'depth_units': 'meters',
-        'depth_png_units': 'millimeters',
-        'disparity_units': 'pixels',
-        'depth_exr_path': depth_exr_path,
-        'disparity_exr_path': disp_exr_path
-    }
-    with open(os.path.join(raw_dir, 'meta.json'), 'w') as f:
-        json.dump(meta, f, indent=2)
-    
-    logging.info("✅ Integration complete!")
-    logging.info(f"📁 Check {args.output_dir} for all results")
-    
-    # Print summary
-    print("\n" + "="*60)
-    print("🎉 YOLO + FoundationStereo Integration Results")
-    print("="*60)
-    print(f"📊 Detected Objects: {len(detections)}")
-    print(f"📐 3D Coordinates Extracted: {len(block_coordinates)}")
-    print(f"📁 Results saved to: {args.output_dir}")
-    print("="*60)
-    
-    for i, block in enumerate(block_coordinates):
-        x, y, z = block['centroid_3d']
-        print(f"🧱 Block {i}: Position=({x:.3f}, {y:.3f}, {z:.3f})m, Confidence={block['confidence']:.3f}")
+    process_stereo_pair(yolo_model, foundation_model, args.left_image, args.right_image, args.output_dir, args)
 
 if __name__ == "__main__":
     main()

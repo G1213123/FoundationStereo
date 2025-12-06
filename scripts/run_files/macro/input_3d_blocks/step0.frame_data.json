@@ -1,6 +1,6 @@
 {
-  "frame": 53,
-  "sequence": 52,
+  "frame": 36,
+  "sequence": 35,
   "step": 0,
   "timestamp": 0.0,
   "captures": [
@@ -9,15 +9,15 @@
       "id": "camera1",
       "description": "",
       "position": [
-        50.45,
-        10.16,
-        81.0
+        66.6913,
+        40.9685745,
+        90.8976
       ],
       "rotation": [
-        -0.108523004,
-        0.504697,
-        0.0598427281,
-        0.8543551
+        -0.00274863839,
+        0.944473565,
+        -0.13148576,
+        0.301120639
       ],
       "velocity": [
         0.0,
@@ -84,20 +84,20 @@
               "labelId": 1,
               "labelName": "Module_Construction",
               "translation": [
-                -23.2947063,
-                7.15433168,
-                47.2106247
+                -0.18068777,
+                2.50781822,
+                39.4729233
               ],
               "size": [
-                6.478687,
-                3.65810132,
-                11.5133162
+                6.296813,
+                11.6089134,
+                8.020217
               ],
               "rotation": [
-                0.122115783,
-                0.14007,
-                0.0211217422,
-                0.982355356
+                -0.5734239,
+                0.218695834,
+                -0.344510943,
+                -0.7104009
               ],
               "velocity": [
                 0.0,
@@ -132,15 +132,15 @@
       "id": "camera2",
       "description": "",
       "position": [
-        52.1419,
-        10.13449,
-        77.9362
+        64.39912,
+        40.7323151,
+        89.3069839
       ],
       "rotation": [
-        -0.108523004,
-        0.504697,
-        0.0598427281,
-        0.8543551
+        -0.00274863839,
+        0.944473565,
+        -0.13148576,
+        0.301120639
       ],
       "velocity": [
         0.0,
@@ -182,20 +182,20 @@
               "labelId": 1,
               "labelName": "Module_Construction",
               "translation": [
-                -26.7947063,
-                7.15433168,
-                47.2106247
+                -2.980683,
+                2.50781822,
+                39.4729233
               ],
               "size": [
-                6.478687,
-                3.65810132,
-                11.5133162
+                6.296813,
+                11.6089134,
+                8.020217
               ],
               "rotation": [
-                0.122115783,
-                0.14007,
-                0.0211217422,
-                0.982355356
+                -0.5734239,
+                0.218695834,
+                -0.344510943,
+                -0.7104009
               ],
               "velocity": [
                 0.0,
@@ -220,7 +220,7 @@
       "sensorId": "",
       "annotationId": "",
       "description": "Iteration information for dataset sequences",
-      "value": 51
+      "value": 34
     },
     {
       "@type": "type.unity.com/unity.solo.GenericMetric",
@@ -229,6 +229,231 @@
       "annotationId": "",
       "description": "The random seed used to initialize the random state of the simulation. Only triggered once per simulation.",
       "value": 539662031
+    },
+    {
+      "@type": "type.unity.com/unity.solo.GenericMetric",
+      "id": "metadata",
+      "sensorId": "",
+      "annotationId": "",
+      "description": "Metadata labeler",
+      "values": [
+        {
+          "instances": [
+            {
+              "instanceId": "2",
+              "transformRecord": {
+                "rotationQuaternion": [
+                  0.0,
+                  -0.06330764,
+                  0.0,
+                  -0.997994065
+                ],
+                "localRotationQuaternion": [
+                  -0.5,
+                  -0.5,
+                  0.5,
+                  0.5
+                ],
+                "rotationEuler": [
+                  0.0,
+                  7.259376,
+                  0.0
+                ],
+                "localRotationEuler": [
+                  0.0,
+                  270.0,
+                  90.0
+                ],
+                "position": [
+                  83.43886,
+                  29.6681023,
+                  57.2788773
+                ],
+                "positionLocal": [
+                  3.0,
+                  -5.699997,
+                  11.9318962
+                ],
+                "parentName": "Module_Lifted",
+                "forwardVector": [
+                  0.12636131,
+                  0.0,
+                  0.9919843
+                ],
+                "lossyScale": [
+                  0.01,
+                  0.01,
+                  0.01
+                ],
+                "localScale": [
+                  0.01,
+                  0.01,
+                  0.01
+                ]
+              }
+            },
+            {
+              "instanceId": "3",
+              "transformRecord": {
+                "rotationQuaternion": [
+                  0.0,
+                  -0.06330764,
+                  0.0,
+                  -0.997994065
+                ],
+                "localRotationQuaternion": [
+                  -0.5,
+                  -0.5,
+                  0.5,
+                  0.5
+                ],
+                "rotationEuler": [
+                  0.0,
+                  7.259376,
+                  0.0
+                ],
+                "localRotationEuler": [
+                  0.0,
+                  270.0,
+                  90.0
+                ],
+                "position": [
+                  94.7474747,
+                  29.6681023,
+                  55.838356
+                ],
+                "positionLocal": [
+                  3.0,
+                  5.7,
+                  11.9318962
+                ],
+                "parentName": "Module_Lifted",
+                "forwardVector": [
+                  0.12636131,
+                  0.0,
+                  0.9919843
+                ],
+                "lossyScale": [
+                  0.01,
+                  0.01,
+                  0.01
+                ],
+                "localScale": [
+                  0.01,
+                  0.01,
+                  0.01
+                ]
+              }
+            },
+            {
+              "instanceId": "4",
+              "transformRecord": {
+                "rotationQuaternion": [
+                  0.0,
+                  -0.06330764,
+                  0.0,
+                  -0.997994065
+                ],
+                "localRotationQuaternion": [
+                  -0.5,
+                  -0.5,
+                  0.5,
+                  0.5
+                ],
+                "rotationEuler": [
+                  0.0,
+                  7.259376,
+                  0.0
+                ],
+                "localRotationEuler": [
+                  0.0,
+                  270.0,
+                  90.0
+                ],
+                "position": [
+                  95.5056458,
+                  29.6681023,
+                  61.79026
+                ],
+                "positionLocal": [
+                  -3.0,
+                  5.7,
+                  11.9318962
+                ],
+                "parentName": "Module_Lifted",
+                "forwardVector": [
+                  0.12636131,
+                  0.0,
+                  0.9919843
+                ],
+                "lossyScale": [
+                  0.01,
+                  0.01,
+                  0.01
+                ],
+                "localScale": [
+                  0.01,
+                  0.01,
+                  0.01
+                ]
+              }
+            },
+            {
+              "instanceId": "5",
+              "transformRecord": {
+                "rotationQuaternion": [
+                  0.0,
+                  -0.06330764,
+                  0.0,
+                  -0.997994065
+                ],
+                "localRotationQuaternion": [
+                  -0.5,
+                  -0.5,
+                  0.5,
+                  0.5
+                ],
+                "rotationEuler": [
+                  0.0,
+                  7.259376,
+                  0.0
+                ],
+                "localRotationEuler": [
+                  0.0,
+                  270.0,
+                  90.0
+                ],
+                "position": [
+                  84.19703,
+                  29.6681023,
+                  63.23078
+                ],
+                "positionLocal": [
+                  -3.0,
+                  -5.699997,
+                  11.9318962
+                ],
+                "parentName": "Module_Lifted",
+                "forwardVector": [
+                  0.12636131,
+                  0.0,
+                  0.9919843
+                ],
+                "lossyScale": [
+                  0.01,
+                  0.01,
+                  0.01
+                ],
+                "localScale": [
+                  0.01,
+                  0.01,
+                  0.01
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

@@ -13,3 +13,4 @@ datasets
 image_sample
 runs
 yolo*.pt
+scripts/run_files/*
