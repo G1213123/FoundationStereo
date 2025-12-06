@@ -44,7 +44,7 @@ class Config:
     edge_thresh = None
     edge_sigma = 0.333
     flatten_far_m = 5.0
-    max_edge_dist_px = 3.0
+    max_edge_dist_px = 5.0
     smooth = True
     smooth_ksize = 5
     smooth_sigma = 1.0
@@ -688,13 +688,6 @@ def run_pipeline(config: Config):
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ks, ks))
     d_filled = fill_invalid_with_median(depth_roi.astype(np.float32))
     
-    # Cap depth range from 5 to 95 percentile
-    valid_pixels = d_filled[d_filled > 0]
-    if valid_pixels.size > 0:
-        dmin = np.percentile(valid_pixels, 5)
-        dmax = np.percentile(valid_pixels, 95)
-        d_filled = np.clip(d_filled, dmin, dmax)
-
     mean = np.nanmean(depth_roi)
     valid_mask = (np.isfinite(depth_roi) & (depth_roi < mean)).astype(np.uint8) * 255
     mask_eroded = cv2.erode(valid_mask, kernel, iterations=1)
@@ -702,24 +695,9 @@ def run_pipeline(config: Config):
     depth_roi_smooth = d_filled.copy()
     depth_roi_smooth[mask_smooth == 0] = 0
 
-        # Remove outlier with standard deviation clipping inside the smoothed mask
-    valid_smooth = (mask_smooth > 0)
-    if valid_smooth.any():
-        d_vals = depth_roi_smooth[valid_smooth]
-        d_mean = float(np.mean(d_vals))
-        d_std = float(np.std(d_vals))
-        lower_bound = d_mean - 2.0 * d_std
-        upper_bound = d_mean + 2.0 * d_std
-        outliers = (depth_roi_smooth < lower_bound) | (depth_roi_smooth > upper_bound)
-        outlier_count = int((outliers & valid_smooth).sum())
-        if outlier_count > 0:
-            depth_roi_smooth[outliers] = 0
-            print(f'Removed {outlier_count} outlier pixels from smoothed depth using 2-sigma clipping.')
-    
     grad, depth_edges = detect_depth_edges(depth_roi_smooth, config.method, 
                                           config.edge_thresh, config.edge_sigma,
-                                          config.smooth, config.smooth_ksize, 
-                                          config.smooth_sigma)
+                                          smooth=False)
     print(f"  Detected {int((depth_edges>0).sum())} edge pixels")
     
     # Stage 4: Filter edges by proximity
