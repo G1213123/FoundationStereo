@@ -20,7 +20,8 @@ def main():
     parser.add_argument('--batch_outputs', type=str, default='../run_files/batch_outputs', help='Folder containing batch outputs (seqX/raw)')
     parser.add_argument('--batch_inputs', type=str, default='../run_files/batch_inputs', help='Folder containing batch inputs (seqX/step0.frame_data.json)')
     parser.add_argument('--output_dir', type=str, default='batch_macro_detection', help='Folder to save detection results')
-    
+    parser.add_argument('--specific_seq', type=str, default="*")
+
     args = parser.parse_args()
     
     if not os.path.exists(args.output_dir):
@@ -28,7 +29,7 @@ def main():
         
     # Find all sequence folders in batch_outputs
     # Structure: batch_outputs/seqX/raw
-    seq_folders = glob.glob(os.path.join(args.batch_outputs, 'seq*'))
+    seq_folders = glob.glob(os.path.join(args.batch_outputs, f'seq{args.specific_seq}'))
     # Sort for consistent order
     seq_folders.sort()
     

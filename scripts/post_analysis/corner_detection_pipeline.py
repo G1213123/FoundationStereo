@@ -38,13 +38,13 @@ class Config:
     """Pipeline configuration parameters"""
     # Depth edge analysis parameters
     raw_dir = None  # Auto-detect if None
-    buffer_px = 4
-    roi_margin_px = 8
+    buffer_px = 2
+    roi_margin_px = 2
     method = 'canny'  # 'sobel' | 'laplacian' | 'canny'
     edge_thresh = None
     edge_sigma = 0.333
     flatten_far_m = 5.0
-    max_edge_dist_px = 5.0
+    max_edge_dist_px = 10
     smooth = True
     smooth_ksize = 5
     smooth_sigma = 1.0
@@ -70,7 +70,7 @@ class Config:
     output_dir = r'../run_files/macro/3d_edge_output'
 
     # Input
-    input_dir = r'../run_files/macro/input_3d_blocks'
+    input_dir = r'./scripts/run_files/input_3d_blocks' #r'../run_files/macro/input_3d_blocks'
 
 
 # ============================================================================
@@ -186,7 +186,7 @@ def compute_roi_from_mask(mask: np.ndarray, margin: int = 0):
     return x1, y1, x2, y2
 
 
-def fill_invalid_with_median(depth: np.ndarray) -> np.ndarray:
+def fill_invalid_with_median(   depth: np.ndarray) -> np.ndarray:
     """Fill invalid depth values with median."""
     d = depth.copy()
     valid = np.isfinite(d) & (d > 0)
@@ -300,7 +300,7 @@ def find_closed_loop(depth_edges_filtered: np.ndarray, depth_roi: np.ndarray,
                 
                 # Get bounding box dimensions
                 x, y, w, h = cv2.boundingRect(c)
-                max_dim = w*h
+                max_dim = cv2.contourArea(c)
                 
                 # Check if contour is closed (has child or parent, i.e., part of a ring structure)
                 # hierarchy: [Next, Previous, First_Child, Parent]
@@ -680,20 +680,43 @@ def run_pipeline(config: Config):
     # Stage 3: Detect depth edges
     print("\n[Stage 3] Detecting depth edges...")
     x1, y1, x2, y2 = roi
-    depth_roi = depth[y1:y2+1, x1:x2+1]
+    depth_roi_raw = depth[y1:y2+1, x1:x2+1]
+        # Filter outliers: clip to 5-95 percentile of valid pixels
+    depth_roi = depth_roi_raw.copy()
+    valid_mask = (depth_roi > 0) & np.isfinite(depth_roi)
     
+    dmin, dmax = 0.0, 1.0 # Default
+    if valid_mask.any():
+        valid_pixels = depth_roi[valid_mask]
+        dmin = float(np.percentile(valid_pixels, 5))
+        dmax = float(np.percentile(valid_pixels, 95))
+        depth_roi[valid_mask] = np.clip(depth_roi[valid_mask], dmin, dmax)
+
     # Apply morphological smoothing
     k = max(1, int(round(config.buffer_px / 4)))
     ks = 5 * k + 1
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ks, ks))
     d_filled = fill_invalid_with_median(depth_roi.astype(np.float32))
     
-    mean = np.nanmean(depth_roi)
+    mean = np.nanmedian(depth_roi) +5 
     valid_mask = (np.isfinite(depth_roi) & (depth_roi < mean)).astype(np.uint8) * 255
     mask_eroded = cv2.erode(valid_mask, kernel, iterations=1)
     mask_smooth = cv2.dilate(mask_eroded, kernel, iterations=1)
     depth_roi_smooth = d_filled.copy()
     depth_roi_smooth[mask_smooth == 0] = 0
+        # Remove outlier with standard deviation clipping inside the smoothed mask
+    valid_smooth = (mask_smooth > 0)
+    if valid_smooth.any():
+        d_vals = depth_roi_smooth[valid_smooth]
+        d_mean = float(np.mean(d_vals))
+        d_std = float(np.std(d_vals))
+        lower_bound = d_mean - 2.0 * d_std
+        upper_bound = d_mean + 2.0 * d_std
+        outliers = (depth_roi_smooth < lower_bound) | (depth_roi_smooth > upper_bound)
+        outlier_count = int((outliers & valid_smooth).sum())
+        if outlier_count > 0:
+            depth_roi_smooth[outliers] = 0
+            print(f'Removed {outlier_count} outlier pixels from smoothed depth using 2-sigma clipping.')
 
     grad, depth_edges = detect_depth_edges(depth_roi_smooth, config.method, 
                                           config.edge_thresh, config.edge_sigma,
@@ -868,12 +891,7 @@ def main():
     # Auto-detect raw_dir if not specified
     if config.raw_dir is None:
         search_roots = [
-            './output_3d_blocks',
-            '../output_3d_blocks',
-            '../../scripts/unity_yolo/output_3d_blocks',
-            './scripts/unity_yolo/output_3d_blocks',
-            '../run_files/macro/output_3d_blocks',
-            '../run_files/macro/input_3d_blocks',
+            './scripts/run_files/batch_outputs',
         ]
         config.raw_dir = auto_detect_raw_dir(search_roots)
         if config.raw_dir is None:
