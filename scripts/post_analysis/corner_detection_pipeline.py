@@ -710,14 +710,14 @@ def run_pipeline(config: Config):
         d_vals = depth_roi_smooth[valid_smooth]
         d_mean = float(np.mean(d_vals))
         d_std = float(np.std(d_vals))
-        lower_bound = d_mean - 2.0 * d_std
-        upper_bound = d_mean + 2.0 * d_std
+        lower_bound = d_mean - 3.0 * d_std
+        upper_bound = d_mean + 3.0 * d_std
         low_outliers = (depth_roi_smooth < lower_bound)
         high_outliers = (depth_roi_smooth > upper_bound)
         outlier_count = int((low_outliers).sum()) + int((high_outliers).sum())
         if outlier_count > 0:
-            depth_roi_smooth[low_outliers] = d_mean + 2.0 * d_std
-            depth_roi_smooth[high_outliers] = d_mean - 2.0 * d_std
+            depth_roi_smooth[low_outliers] = d_mean + 3.0 * d_std
+            depth_roi_smooth[high_outliers] = d_mean - 3.0 * d_std
             print(f'Removed {outlier_count} outlier pixels from smoothed depth using 2-sigma clipping.')
 
     grad, depth_edges = detect_depth_edges(depth_roi_smooth, config.method, 
