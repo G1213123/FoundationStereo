@@ -42,8 +42,7 @@ class Config:
     roi_margin_px = 2
     method = 'canny'  # 'sobel' | 'laplacian' | 'canny'
     edge_thresh = None
-    edge_sigma = 0.333
-    flatten_far_m = 5.0
+    edge_sigma = 0.6
     max_edge_dist_px = 10
     smooth = True
     smooth_ksize = 5
@@ -284,7 +283,7 @@ def find_closed_loop(depth_edges_filtered: np.ndarray, depth_roi: np.ndarray,
     
     epsilon_frac = 0.005
     min_vertices = 4
-    max_iterations = 10
+    max_iterations = 20
     
     best_loop = None
     working_mask = mask.copy()
@@ -323,7 +322,7 @@ def find_closed_loop(depth_edges_filtered: np.ndarray, depth_roi: np.ndarray,
         
         if iteration < max_iterations:
             ks = 2*iteration + 1
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ks, ks))
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (ks, ks))
             working_mask = cv2.morphologyEx(working_mask, cv2.MORPH_CLOSE, kernel, iterations=1)
             iteration += 1
         else:
@@ -698,8 +697,9 @@ def run_pipeline(config: Config):
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ks, ks))
     d_filled = fill_invalid_with_median(depth_roi.astype(np.float32))
     
-    mean = np.nanmedian(depth_roi) +5 
-    valid_mask = (np.isfinite(depth_roi) & (depth_roi < mean)).astype(np.uint8) * 255
+    mean = np.nanmedian(depth_roi)  # Diagonal depth of module
+    std = np.nanstd(depth_roi)
+    valid_mask = ((depth_roi < mean + 2 * std ) & (depth_roi > mean - 2 * std )).astype(np.uint8) * 255
     mask_eroded = cv2.erode(valid_mask, kernel, iterations=1)
     mask_smooth = cv2.dilate(mask_eroded, kernel, iterations=1)
     depth_roi_smooth = d_filled.copy()
@@ -712,10 +712,12 @@ def run_pipeline(config: Config):
         d_std = float(np.std(d_vals))
         lower_bound = d_mean - 2.0 * d_std
         upper_bound = d_mean + 2.0 * d_std
-        outliers = (depth_roi_smooth < lower_bound) | (depth_roi_smooth > upper_bound)
-        outlier_count = int((outliers & valid_smooth).sum())
+        low_outliers = (depth_roi_smooth < lower_bound)
+        high_outliers = (depth_roi_smooth > upper_bound)
+        outlier_count = int((low_outliers).sum()) + int((high_outliers).sum())
         if outlier_count > 0:
-            depth_roi_smooth[outliers] = 0
+            depth_roi_smooth[low_outliers] = d_mean + 2.0 * d_std
+            depth_roi_smooth[high_outliers] = d_mean - 2.0 * d_std
             print(f'Removed {outlier_count} outlier pixels from smoothed depth using 2-sigma clipping.')
 
     grad, depth_edges = detect_depth_edges(depth_roi_smooth, config.method, 
