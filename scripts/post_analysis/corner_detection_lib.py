@@ -320,7 +320,7 @@ def find_closed_loop(depth_edges_filtered: np.ndarray, depth_roi: np.ndarray,
                     large_closed_contours.append(c)
         
         if large_closed_contours:
-            largest_contour = max(large_closed_contours, key=cv2.contourArea)
+            largest_contour = min(large_closed_contours, key=cv2.contourArea)
             peri = float(cv2.arcLength(largest_contour, True))
             if peri > 0:
                 eps = float(epsilon_frac * peri)
@@ -557,38 +557,24 @@ def segment_planes(pts_all: np.ndarray, plane_distance: float, num_planes: int =
 
 
 def compute_box_corners(plane_models: list, pts_all: np.ndarray):
-    """Compute 8 box corners from 3 planes using percentile-based far planes."""
+    """Compute the single intersection corner of 3 planes."""
     if len(plane_models) < 3:
-        raise ValueError("Need at least 3 planes")
+        return np.array([], dtype=float)
     
-    Ns = np.stack([p['normal'] for p in plane_models], axis=0)
-    s0 = np.array([-p['d'] for p in plane_models], dtype=float)
+    # Use the first 3 planes
+    Ns = np.stack([p['normal'] for p in plane_models[:3]], axis=0)
+    d_vals = np.array([p['d'] for p in plane_models[:3]], dtype=float)
     
-    # Compute far parallel plane offsets
-    s_pairs = []
-    for i in range(3):
-        n = Ns[i]
-        s_all = pts_all.dot(n)
-        q05, q95 = np.quantile(s_all, [0.05, 0.95])
-        s_far = q05 if abs(q05 - s0[i]) > abs(q95 - s0[i]) else q95
-        if abs(s_far - s0[i]) < 1e-3:
-            s_far = float(s_all.min()) if abs(s_all.min() - s0[i]) > abs(s_all.max() - s0[i]) else float(s_all.max())
-        s_pairs.append([float(s0[i]), float(s_far)])
-    
+    # Solve Ns * x = -d_vals
     try:
-        Ns_inv = np.linalg.inv(Ns)
+        corner = np.linalg.solve(Ns, -d_vals)
+        return np.array([corner], dtype=float)
     except np.linalg.LinAlgError:
-        Ns_inv = np.linalg.pinv(Ns)
-    
-    import itertools
-    corner_keys = list(itertools.product([0, 1], repeat=3))
-    corners = []
-    for key in corner_keys:
-        s_vec = np.array([s_pairs[i][key[i]] for i in range(3)], dtype=float)
-        x = Ns_inv.dot(s_vec)
-        corners.append(x)
-    
-    return np.array(corners, dtype=float)
+        try:
+            corner, _, _, _ = np.linalg.lstsq(Ns, -d_vals, rcond=None)
+            return np.array([corner], dtype=float)
+        except Exception:
+            return np.array([], dtype=float)
 
 
 def find_ground_truth_corners(json_path: str):
@@ -630,6 +616,12 @@ def transform_to_world_space(corners_camera: np.ndarray, camera_position, camera
     if camera_position is None or camera_rotation_quat is None:
         return corners_camera
     
+    # Convert from CV camera space (Y-down) to Unity camera space (Y-up)
+    # Unity Camera: X-Right, Y-Up, Z-Forward
+    # CV Camera: X-Right, Y-Down, Z-Forward
+    corners_unity_local = corners_camera.copy()
+    corners_unity_local[:, 1] *= -1
+    
     qx, qy, qz, qw = camera_rotation_quat
     R = np.array([
         [1 - 2*(qy**2 + qz**2), 2*(qx*qy - qz*qw), 2*(qx*qz + qy*qw)],
@@ -638,7 +630,7 @@ def transform_to_world_space(corners_camera: np.ndarray, camera_position, camera
     ])
     t = np.array(camera_position, dtype=float)
     
-    return (R @ corners_camera.T).T + t
+    return (R @ corners_unity_local.T).T + t
 
 
 def compare_corners(gt_corners: np.ndarray, detected_corners_world: np.ndarray):
@@ -662,6 +654,41 @@ def compare_corners(gt_corners: np.ndarray, detected_corners_world: np.ndarray):
     return best_match, matches
 
 
+def visualize_depth(depth: np.ndarray) -> np.ndarray:
+    """Visualize depth map using Turbo colormap."""
+    d = depth.copy()
+    valid = np.isfinite(d) & (d > 0)
+    if not valid.any():
+        return np.zeros((*d.shape, 3), dtype=np.uint8)
+    
+    d_valid = d[valid]
+    dmin = np.percentile(d_valid, 5)
+    dmax = np.percentile(d_valid, 95)
+    if dmax <= dmin: dmax = dmin + 1e-6
+    
+    d_norm = np.clip((d - dmin) / (dmax - dmin), 0, 1)
+    d_u8 = (d_norm * 255).astype(np.uint8)
+    d_color = cv2.applyColorMap(d_u8, cv2.COLORMAP_TURBO)
+    d_color[~valid] = 0
+    return d_color
+
+
+def project_points(points_3d: np.ndarray, fx: float, fy: float, cx: float, cy: float) -> np.ndarray:
+    """Project 3D points to 2D pixel coordinates."""
+    if points_3d.shape[0] == 0:
+        return np.zeros((0, 2))
+    X = points_3d[:, 0]
+    Y = points_3d[:, 1]
+    Z = points_3d[:, 2]
+    
+    # Avoid division by zero
+    Z = np.where(np.abs(Z) < 1e-6, 1e-6, Z)
+    
+    u = (X * fx / Z) + cx
+    v = (Y * fy / Z) + cy
+    return np.stack([u, v], axis=1)
+
+
 # ============================================================================
 # MAIN PIPELINE
 # ============================================================================
@@ -675,6 +702,9 @@ def run_pipeline(config: Config):
     print("CORNER DETECTION PIPELINE")
     print("=" * 80)
     
+    if config.output_dir and not os.path.exists(config.output_dir):
+        os.makedirs(config.output_dir)
+
     # Stage 1: Find and load raw data
     print("\n[Stage 1] Loading raw depth and edge data...")
     if config.raw_dir is None:
@@ -683,6 +713,12 @@ def run_pipeline(config: Config):
     depth, edges_bin = load_raw(config.raw_dir, config.filter_top_instance)
     print(f"  Depth: {depth.shape}, Edges: {int((edges_bin>0).sum())} pixels")
     
+    if config.output_dir:
+        d_vis = visualize_depth(depth)
+        e_vis = cv2.cvtColor(edges_bin, cv2.COLOR_GRAY2BGR)
+        combined = np.hstack([d_vis, e_vis])
+        cv2.imwrite(os.path.join(config.output_dir, '01_raw_input.png'), combined)
+
     # Stage 2: Buffer edges and compute ROI
     print("\n[Stage 2] Computing ROI from edges...")
     buf = buffer_edges(edges_bin, config.buffer_px)
@@ -754,6 +790,12 @@ def run_pipeline(config: Config):
         raise RuntimeError("No closed loop found")
     print(f"  Found loop with {len(best_loop)} vertices")
     
+    if config.output_dir:
+        vis_loop = visualize_depth(depth_roi)
+        # best_loop is in ROI coordinates
+        cv2.drawContours(vis_loop, [best_loop], -1, (0, 0, 255), 2)
+        cv2.imwrite(os.path.join(config.output_dir, '05_closed_loop.png'), vis_loop)
+
     # Stage 6: Extract boundary points
     print("\n[Stage 6] Extracting 3D points within boundary...")
     pts_pixel = extract_boundary_points(depth_roi, best_loop, roi)
@@ -818,6 +860,29 @@ def run_pipeline(config: Config):
                            config.ransac_n, config.num_iterations)
     print(f"  Found {len(planes)} planes")
     
+    if config.output_dir and planes:
+        # Project mesh vertices back to 2D for visualization (Step 9)
+        pts_2d = project_points(pts_all, fx, fy, cx, cy)
+        
+        x1, y1, x2, y2 = roi
+        # Create blank black image for planes
+        vis_planes = np.zeros((depth[y1:y2+1, x1:x2+1].shape[0], depth[y1:y2+1, x1:x2+1].shape[1], 3), dtype=np.uint8)
+        
+        # Offset points by ROI top-left
+        pts_2d_roi = pts_2d - np.array([x1, y1])
+        
+        colors = [(0, 0, 255), (0, 255, 0), (255, 0, 0), (0, 255, 255), (255, 0, 255)]
+        
+        for i, plane in enumerate(planes):
+            inliers = plane['inliers']
+            plane_pts = pts_2d_roi[inliers].astype(np.int32)
+            
+            for pt in plane_pts:
+                if 0 <= pt[0] < vis_planes.shape[1] and 0 <= pt[1] < vis_planes.shape[0]:
+                    vis_planes[pt[1], pt[0]] = colors[i % len(colors)]
+        
+        cv2.imwrite(os.path.join(config.output_dir, '09_planes.png'), vis_planes)
+
     # Stage 10: Compute box corners
     print("\n[Stage 10] Computing box corners...")
     box_corners = compute_box_corners(planes, pts_all)
@@ -851,6 +916,49 @@ def run_pipeline(config: Config):
     print(f"  Detected Corner {best_match['detected_idx']}: {best_match['detected_coord']}")
     print(f"  Distance: {best_match['distance']:.6f} m")
     
+    if camera_position is not None:
+        cam_dist = np.linalg.norm(np.array(camera_position) - best_match['gt_coord'])
+        print(f"  Camera to GT Corner Distance: {cam_dist:.6f} m")
+        best_match['camera_to_gt_distance'] = cam_dist
+    else:
+        best_match['camera_to_gt_distance'] = None
+
+    if config.output_dir and 'vis_planes' in locals():
+        # Step 10 Visualization: Use plane image from Step 9 and add corners
+        vis_corners = vis_planes.copy()
+        x1, y1, x2, y2 = roi
+        
+        # Draw Detected Corners (Blue)
+        if len(box_corners) > 0:
+            corners_2d = project_points(box_corners, fx, fy, cx, cy)
+            corners_2d_roi = corners_2d - np.array([x1, y1])
+            for pt in corners_2d_roi.astype(np.int32):
+                 cv2.circle(vis_corners, tuple(pt), 5, (255, 0, 0), -1) # Blue
+                 cv2.circle(vis_corners, tuple(pt), 3, (0, 0, 0), -1)
+
+        # Draw Ground Truth Corners (Green)
+        if gt_corners is not None and camera_position is not None and camera_rotation_quat is not None:
+            # Transform GT corners (World) -> Camera Space
+            # P_world = R * P_cam + t  =>  P_cam = R.T * (P_world - t)
+            qx, qy, qz, qw = camera_rotation_quat
+            R = np.array([
+                [1 - 2*(qy**2 + qz**2), 2*(qx*qy - qz*qw), 2*(qx*qz + qy*qw)],
+                [2*(qx*qy + qz*qw), 1 - 2*(qx**2 + qz**2), 2*(qy*qz - qx*qw)],
+                [2*(qx*qz - qy*qw), 2*(qy*qz + qx*qw), 1 - 2*(qx**2 + qy**2)]
+            ])
+            t = np.array(camera_position, dtype=float)
+            
+            gt_corners_cam = (R.T @ (gt_corners - t).T).T
+            
+            gt_2d = project_points(gt_corners_cam, fx, fy, cx, cy)
+            gt_2d_roi = gt_2d - np.array([x1, y1])
+            
+            for pt in gt_2d_roi.astype(np.int32):
+                cv2.circle(vis_corners, tuple(pt), 5, (0, 255, 0), -1) # Green
+                cv2.circle(vis_corners, tuple(pt), 3, (0, 0, 0), -1)
+        
+        cv2.imwrite(os.path.join(config.output_dir, '10_planes_corners.png'), vis_corners)
+
     print("\nSTATISTICS:")
     all_dists = [m['distance'] for m in all_matches]
     print(f"  Mean distance: {np.mean(all_dists):.6f} m")

@@ -13,7 +13,7 @@ from contextlib import redirect_stdout
 
 # Add current directory to path to import pipeline
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from corner_detection_pipeline import Config, run_pipeline
+from corner_detection_lib import Config, run_pipeline
 
 def main():
     parser = argparse.ArgumentParser(description='Batch Corner Detection')
@@ -61,7 +61,11 @@ def main():
         config.output_dir = os.path.join(args.output_dir, seq_id) 
         
         # Run pipeline and save output
-        output_file = os.path.join(args.output_dir, f"{seq_id}_detection.txt")
+        # Ensure output directory exists (it might be created by run_pipeline, but we need it for the text file)
+        if not os.path.exists(config.output_dir):
+            os.makedirs(config.output_dir)
+            
+        output_file = os.path.join(config.output_dir, "detection.txt")
         
         try:
             # Capture stdout to file
@@ -71,8 +75,13 @@ def main():
             
             if result:
                 distances.append(result['distance'])
-                results_data.append((seq_id, result['distance']))
-                print(f"  Success! Distance: {result['distance']:.6f} m")
+                cam_dist = result.get('camera_to_gt_distance')
+                results_data.append((seq_id, result['distance'], cam_dist))
+                
+                msg = f"  Success! Distance: {result['distance']:.6f} m"
+                if cam_dist is not None:
+                    msg += f", Cam-GT Dist: {cam_dist:.6f} m"
+                print(msg)
             else:
                 print(f"  Failed to detect corners or match ground truth.")
                 
@@ -104,8 +113,10 @@ def main():
             
             f.write(f"\nPer-Sequence Results:\n")
             f.write(f"---------------------\n")
-            for sid, dist in results_data:
-                f.write(f"{sid}: {dist:.6f} m\n")
+            f.write(f"{'Sequence ID':<20} | {'Error (m)':<12} | {'Cam-GT Dist (m)':<15}\n")
+            for sid, dist, cam_dist in results_data:
+                cam_str = f"{cam_dist:.6f}" if cam_dist is not None else "N/A"
+                f.write(f"{sid:<20} | {dist:<12.6f} | {cam_str:<15}\n")
         print(f"Summary saved to {summary_path}")
     else:
         print("No successful detections.")
