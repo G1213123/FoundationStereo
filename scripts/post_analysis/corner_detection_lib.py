@@ -42,7 +42,7 @@ class Config:
     method = 'canny'  # 'sobel' | 'laplacian' | 'canny'
     edge_thresh = None
     edge_sigma = 0.6
-    max_edge_dist_px = 10
+    max_edge_dist_px = 15
     smooth = True
     smooth_ksize = 5
     smooth_sigma = 1.0
@@ -63,6 +63,8 @@ class Config:
     num_planes = 3
     ransac_n = 3
     num_iterations = 2000
+    ortho_thresh_deg = 20.0
+    min_inlier_ratio = 0.1
     
     # Output
     output_dir = r'../run_files/macro/3d_edge_output'
@@ -280,10 +282,30 @@ def detect_depth_edges(depth_roi: np.ndarray, method: str, edge_thresh: float | 
     raise ValueError("Unknown method. Choose from: sobel, laplacian, canny")
 
 
+def create_mosaic(images, max_cols=None):
+    """Helper to create a mosaic from a list of images."""
+    if not images:
+        return None
+    n = len(images)
+    if max_cols is None:
+        cols = int(np.ceil(np.sqrt(n)))
+    else:
+        cols = min(n, max_cols)
+    rows = (n + cols - 1) // cols
+    h, w = images[0].shape[:2]
+    mosaic = np.zeros((rows * h, cols * w), dtype=images[0].dtype)
+    for i, img in enumerate(images):
+        r = i // cols
+        c = i % cols
+        mosaic[r*h:(r+1)*h, c*w:(c+1)*w] = img
+    return mosaic
+
+
 def find_closed_loop(depth_edges_filtered: np.ndarray, depth_roi: np.ndarray, 
                     buffer_px: int):
     """
     Step 7: Find closed loop using iterative morphological closing.
+    Returns: best_loop, iteration_count, mosaic_image
     """
     mask = (depth_edges_filtered > 0).astype(np.uint8) * 255
     
@@ -292,13 +314,17 @@ def find_closed_loop(depth_edges_filtered: np.ndarray, depth_roi: np.ndarray,
     
     epsilon_frac = 0.005
     min_vertices = 4
-    max_iterations = 20
+    max_iterations = 50
     
     best_loop = None
     working_mask = mask.copy()
     iteration = 0
     
+    debug_frames = []
+    
     while best_loop is None and iteration <= max_iterations:
+        debug_frames.append(working_mask.copy())
+        
         # Find contours with hierarchy to detect holes
         cnts, hierarchy = cv2.findContours(working_mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
         
@@ -330,14 +356,15 @@ def find_closed_loop(depth_edges_filtered: np.ndarray, depth_roi: np.ndarray,
                     break
         
         if iteration < max_iterations:
-            ks = 2*iteration + 1
+            ks = 4 * iteration + 1
             kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (ks, ks))
             working_mask = cv2.morphologyEx(working_mask, cv2.MORPH_CLOSE, kernel, iterations=1)
             iteration += 1
         else:
             break
     
-    return best_loop
+    mosaic = create_mosaic(debug_frames)
+    return best_loop, iteration, mosaic
 
 
 def extract_boundary_points(depth_roi: np.ndarray, best_loop, roi):
@@ -574,8 +601,134 @@ def compute_box_corners(plane_models: list, pts_all: np.ndarray):
             corner, _, _, _ = np.linalg.lstsq(Ns, -d_vals, rcond=None)
             return np.array([corner], dtype=float)
         except Exception:
+
             return np.array([], dtype=float)
 
+def process_planes_and_corners(planes, pts_all, ortho_thresh_deg=20.0, min_inlier_ratio=0.1):
+    """
+    Filter planes based on orthogonality to the prime plane (most points)
+    and compute corners based on the number of valid planes.
+    """
+    if not planes:
+        return [], np.array([], dtype=float)
+
+    # Filter planes by inlier count
+    total_points = len(pts_all)
+    min_inliers = int(min_inlier_ratio * total_points)
+    print(f"  Filtering planes with < {min_inliers} inliers ({min_inlier_ratio*100:.1f}% of {total_points})")
+    
+    filtered_planes = []
+    for p in planes:
+        if len(p['inliers']) >= min_inliers:
+            filtered_planes.append(p)
+        else:
+            print(f"  Dropping plane with {len(p['inliers'])} inliers (Threshold: {min_inliers})")
+            
+    if not filtered_planes:
+        print("  No planes left after inlier filtering.")
+        return [], np.array([], dtype=float)
+        
+    planes = filtered_planes
+
+    # 1. Identify Prime Plane (most inliers)
+    planes_sorted = sorted(planes, key=lambda p: len(p['inliers']), reverse=True)
+    prime_plane = planes_sorted[0]
+    valid_planes = [prime_plane]
+
+    # 2. Check Orthogonality
+    # Threshold: |dot| < sin(thresh)
+    threshold_val = np.sin(np.deg2rad(ortho_thresh_deg))
+    
+    print(f"  Prime plane has {len(prime_plane['inliers'])} inliers. Normal: {prime_plane['normal']}")
+
+    for i in range(1, len(planes_sorted)):
+        p = planes_sorted[i]
+        dot_val = np.abs(np.dot(prime_plane['normal'], p['normal']))
+        if dot_val < threshold_val:
+            valid_planes.append(p)
+            print(f"  Keeping plane (inliers: {len(p['inliers'])}) - Orthogonal (dot={dot_val:.3f})")
+        else:
+            print(f"  Discarding plane (inliers: {len(p['inliers'])}) - Not orthogonal (dot={dot_val:.3f})")
+
+    # 3. Compute Corners
+    corners = []
+    num_valid = len(valid_planes)
+    print(f"  Using {num_valid} valid planes for corner calculation.")
+
+    if num_valid >= 3:
+        # 3 Planes -> 1 Intersection
+        Ns = np.stack([p['normal'] for p in valid_planes[:3]], axis=0)
+        d_vals = np.array([p['d'] for p in valid_planes[:3]], dtype=float)
+        try:
+            corner = np.linalg.solve(Ns, -d_vals)
+            corners = [corner]
+        except np.linalg.LinAlgError:
+            corner, _, _, _ = np.linalg.lstsq(Ns, -d_vals, rcond=None)
+            corners = [corner]
+
+    elif num_valid == 2:
+        # 2 Planes -> 2 Points (Line segment endpoints)
+        p1 = valid_planes[0]
+        p2 = valid_planes[1]
+        n1 = p1['normal']
+        n2 = p2['normal']
+        d1 = p1['d']
+        d2 = p2['d']
+        
+        line_dir = np.cross(n1, n2)
+        norm_dir = np.linalg.norm(line_dir)
+        
+        if norm_dir > 1e-6:
+            line_dir /= norm_dir
+            
+            # Point on line
+            A = np.vstack([n1, n2, line_dir])
+            b = np.array([-d1, -d2, 0])
+            try:
+                x0 = np.linalg.solve(A, b)
+            except:
+                x0, _, _, _ = np.linalg.lstsq(A, b, rcond=None)
+            
+            # Project inliers
+            idx1 = p1['inliers']
+            idx2 = p2['inliers']
+            pts_in = np.concatenate([pts_all[idx1], pts_all[idx2]], axis=0)
+            
+            t_vals = np.dot(pts_in - x0, line_dir)
+            t_min = np.min(t_vals)
+            t_max = np.max(t_vals)
+            
+            corners = [x0 + t_min * line_dir, x0 + t_max * line_dir]
+
+    elif num_valid == 1:
+        # 1 Plane -> 4 Points (Rectangle)
+        p = valid_planes[0]
+        n = p['normal']
+        pts = pts_all[p['inliers']]
+        
+        # Local coordinates
+        helper = np.array([1, 0, 0])
+        if np.abs(np.dot(helper, n)) > 0.9:
+            helper = np.array([0, 1, 0])
+        x_prime = np.cross(n, helper)
+        x_prime /= np.linalg.norm(x_prime)
+        y_prime = np.cross(n, x_prime)
+        
+        centroid = np.mean(pts, axis=0)
+        pts_centered = pts - centroid
+        
+        u = np.dot(pts_centered, x_prime)
+        v = np.dot(pts_centered, y_prime)
+        uv = np.stack([u, v], axis=1).astype(np.float32)
+        
+        rect = cv2.minAreaRect(uv)
+        box_2d = cv2.boxPoints(rect)
+        
+        for pt_2d in box_2d:
+            pt_3d = centroid + pt_2d[0] * x_prime + pt_2d[1] * y_prime
+            corners.append(pt_3d)
+
+    return valid_planes, np.array(corners, dtype=float)
 
 def find_ground_truth_corners(json_path: str):
     """Extract ground truth corners from frame_data.json."""
@@ -589,11 +742,9 @@ def find_ground_truth_corners(json_path: str):
         position = transform.get('position', None)
         if position and isinstance(position, list) and len(position) == 3:
             corner_positions.append([float(position[0]), float(position[1]), float(position[2])])
-        if len(corner_positions) >= 4:
-            break
     
-    if len(corner_positions) >= 4:
-        return np.array(corner_positions[:4], dtype=float)
+    if len(corner_positions) >= 8:
+        return np.array(corner_positions[:8], dtype=float)
     return None
 
 
@@ -777,7 +928,6 @@ def run_pipeline(config: Config):
     print(f"  Detected {int((depth_edges>0).sum())} edge pixels")
     
     # Stage 4: Filter edges by proximity
-    print("\n[Stage 4] Filtering edges by proximity to loaded edges...")
     loaded_edges_roi = (edges_bin[y1:y2+1, x1:x2+1] > 0).astype(np.uint8)
     depth_edges_filtered, dt = filter_depth_edges(depth_edges, loaded_edges_roi, config.max_edge_dist_px, config.buffer_px)
     
@@ -785,12 +935,15 @@ def run_pipeline(config: Config):
     
     # Stage 5: Find closed loop
     print("\n[Stage 5] Finding closed loop...")
-    best_loop = find_closed_loop(depth_edges_filtered, depth_roi, config.buffer_px)
+    best_loop, iterations, mosaic = find_closed_loop(depth_edges_filtered, depth_roi, config.buffer_px)
     if best_loop is None:
         raise RuntimeError("No closed loop found")
-    print(f"  Found loop with {len(best_loop)} vertices")
+    print(f"  Found loop with {len(best_loop)} vertices after {iterations} iterations")
     
     if config.output_dir:
+        if mosaic is not None:
+            cv2.imwrite(os.path.join(config.output_dir, '05_closing_process.png'), mosaic)
+        
         vis_loop = visualize_depth(depth_roi)
         # best_loop is in ROI coordinates
         cv2.drawContours(vis_loop, [best_loop], -1, (0, 0, 255), 2)
@@ -885,7 +1038,7 @@ def run_pipeline(config: Config):
 
     # Stage 10: Compute box corners
     print("\n[Stage 10] Computing box corners...")
-    box_corners = compute_box_corners(planes, pts_all)
+    planes, box_corners = process_planes_and_corners(planes, pts_all, config.ortho_thresh_deg, config.min_inlier_ratio)
     print(f"  Computed {len(box_corners)} box corners")
     
     # Stage 11: Compare with ground truth
@@ -949,6 +1102,9 @@ def run_pipeline(config: Config):
             t = np.array(camera_position, dtype=float)
             
             gt_corners_cam = (R.T @ (gt_corners - t).T).T
+            
+            # Convert to CV Camera Space (Y-down) for projection
+            gt_corners_cam[:, 1] *= -1
             
             gt_2d = project_points(gt_corners_cam, fx, fy, cx, cy)
             gt_2d_roi = gt_2d - np.array([x1, y1])

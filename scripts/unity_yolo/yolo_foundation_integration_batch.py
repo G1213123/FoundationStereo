@@ -210,10 +210,27 @@ def main():
 
     logging.info("Batch processing complete!")
 
-        # Save stats
+    # Save stats
     if processing_stats:
-        times = [s['time'] for s in processing_stats]
-        mean_time = sum(times) / len(times)
+        raw_times = [s['time'] for s in processing_stats]
+        
+        # Calculate initialization overhead
+        init_overhead = 0.0
+        adjusted_times = list(raw_times)
+        
+        if len(raw_times) > 1:
+            # Calculate mean of subsequent runs (steady state)
+            steady_times = raw_times[1:]
+            mean_steady_time = sum(steady_times) / len(steady_times)
+            
+            # If first run is significantly slower, treat difference as init overhead
+            if raw_times[0] > mean_steady_time:
+                init_overhead = raw_times[0] - mean_steady_time
+                # Discount the init time from the first sequence for stats/plotting
+                adjusted_times[0] = mean_steady_time
+                logging.info(f"Discounted {init_overhead:.4f}s initialization overhead from first sequence.")
+
+        mean_time = sum(adjusted_times) / len(adjusted_times)
         logging.info(f"Mean processing time: {mean_time:.4f} seconds")
         
         stats_file = os.path.join(args.output_folder, "processing_stats.txt")
@@ -221,11 +238,47 @@ def main():
             f.write(f"Batch Processing Stats\n")
             f.write(f"======================\n")
             f.write(f"Total sequences processed: {len(processing_stats)}\n")
-            f.write(f"Mean processing time: {mean_time:.4f} seconds\n\n")
-            f.write("Individual times:\n")
-            for stat in processing_stats:
-                f.write(f"Sequence {stat['seq_id']}: {stat['time']:.4f} seconds\n")
+            f.write(f"Mean processing time: {mean_time:.4f} seconds\n")
+            if init_overhead > 0:
+                f.write(f"Initialization overhead (seq 0): {init_overhead:.4f} seconds\n")
+            f.write(f"\nIndividual times (adjusted):\n")
+            for i, stat in enumerate(processing_stats):
+                f.write(f"Sequence {stat['seq_id']}: {adjusted_times[i]:.4f} seconds\n")
         logging.info(f"Stats saved to {stats_file}")
+
+        # Generate Plot
+        try:
+            import matplotlib.pyplot as plt
+            
+            plt.figure(figsize=(10, 6))
+            seq_indices = range(len(adjusted_times))
+            
+            # Plot runtimes
+            plt.plot(seq_indices, adjusted_times, marker='o', linestyle='-', linewidth=2, label='Sequence Runtime')
+            
+            # Plot mean line
+            plt.axhline(y=mean_time, color='r', linestyle='--', label=f'Mean: {mean_time:.2f}s')
+            
+            # Add init time info
+            if init_overhead > 0:
+                # Add a dummy line for the legend to show init time
+                plt.plot([], [], ' ', label=f'Init Overhead: {init_overhead:.2f}s')
+            
+            plt.title('Processing Runtime vs Sequence')
+            plt.xlabel('Sequence Index')
+            plt.ylabel('Time (seconds)')
+            plt.grid(True, alpha=0.3)
+            plt.legend()
+            
+            plot_file = os.path.join(args.output_folder, "runtime_plot.png")
+            plt.savefig(plot_file)
+            plt.close()
+            logging.info(f"Runtime plot saved to {plot_file}")
+            
+        except ImportError:
+            logging.warning("matplotlib not found. Skipping plot generation.")
+        except Exception as e:
+            logging.error(f"Error generating plot: {e}")
 
 
 if __name__ == "__main__":
