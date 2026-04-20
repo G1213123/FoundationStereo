@@ -68,6 +68,7 @@ def main():
     parser.add_argument('--input_folder', type=str, required=True, help='Folder containing image sequences')
     parser.add_argument('--batch_size', type=int, default=5, help='Number of sequences to process randomly')
     parser.add_argument('--output_folder', type=str, default='../run_files/batch_outputs', help='Root output folder')
+    parser.add_argument('--save_inputs_folder', type=str, default=None, help='Folder to save batch input images to')
     
     # Model paths (same as original script)
     parser.add_argument('--yolo_model', type=str, help='YOLO model path (uses .env if not specified)')
@@ -165,7 +166,10 @@ def main():
         os.makedirs(seq_output_dir, exist_ok=True)
         
         # Save input files
-        root_input_save_dir = os.path.join(os.path.dirname(args.output_folder), 'batch_inputs')
+        if args.save_inputs_folder:
+            root_input_save_dir = args.save_inputs_folder
+        else:
+            root_input_save_dir = os.path.join(os.path.dirname(args.output_folder), 'batch_inputs')
         seq_input_save_dir = os.path.join(root_input_save_dir, f'seq{i}')
         os.makedirs(seq_input_save_dir, exist_ok=True)
         

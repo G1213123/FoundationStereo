@@ -14,7 +14,7 @@ from contextlib import redirect_stdout
 
 # Add current directory to path to import pipeline
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from corner_detection_lib import Config, run_pipeline
+from corner_detection_lib import Config, run_pipeline, save_error_vs_distance_plot
 
 def main():
     parser = argparse.ArgumentParser(description='Batch Corner Detection')
@@ -192,7 +192,26 @@ def main():
             plt.savefig(plot_file)
             plt.close()
             print(f"Runtime plot saved to {plot_file}")
-            
+
+            # Generate Error vs Distance Plot
+            error_plot_file = os.path.join(args.output_dir, "error_vs_distance.png")
+            save_error_vs_distance_plot(error_plot_file, results_data)
+            print(f"Error vs Distance plot saved to {error_plot_file}")
+
+            # --- RUN ERROR ANALYSIS SUB-MODULE ALONG WITH BATCH ---
+            try:
+                print("\n" + "="*40)
+                print("Running Error Analysis module...")
+                print("="*40)
+                # We can just import and run the main function from error_analysis.py if accessible
+                # Otherwise, we execute it as a process
+                import subprocess
+                summary_file = os.path.join(args.output_dir, "batch_summary.txt")
+                error_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "error_analysis.py")
+                subprocess.run([sys.executable, error_script, "--summary_file", summary_file, "--output_dir", args.output_dir], check=True)
+            except Exception as e:
+                print(f"Error running error_analysis script: {e}")
+                
         except ImportError:
             print("matplotlib not found. Skipping plot generation.")
         except Exception as e:

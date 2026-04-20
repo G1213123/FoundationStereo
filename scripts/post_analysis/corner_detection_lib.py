@@ -28,6 +28,13 @@ except ImportError:
     o3d = None
     print("Warning: Open3D not available. 3D processing will fail.")
 
+try:
+    import matplotlib.pyplot as plt
+except ImportError:
+    plt = None
+    print("Warning: matplotlib not available. Plotting will fail.")
+
+
 
 # ============================================================================
 # CONFIGURATION
@@ -42,7 +49,7 @@ class Config:
     method = 'canny'  # 'sobel' | 'laplacian' | 'canny'
     edge_thresh = None
     edge_sigma = 0.6
-    max_edge_dist_px = 15
+    max_edge_dist_px = 10
     smooth = True
     smooth_ksize = 5
     smooth_sigma = 1.0
@@ -56,6 +63,7 @@ class Config:
     std_ratio = 1.0
     bpa_radius_factor = 1.5
     bpa_radii = None
+    use_mesh = False
     normal_radius = None
     angle_thresh_deg = 20.0
     min_edge_length = 0.01
@@ -67,7 +75,8 @@ class Config:
     min_inlier_ratio = 0.1
     
     # Output
-    output_dir = r'../run_files/macro/3d_edge_output'
+    output_dir = r'./scripts/run_files/batch_macro_detection' #r'../run_files/macro/output_corners'
+    save_vis_images = False
 
     # Input
     input_dir = r'./scripts/run_files/input_3d_blocks' #r'../run_files/macro/input_3d_blocks'
@@ -502,7 +511,7 @@ def build_mesh_from_pointcloud(pcd, bpa_radii):
 
 
 def segment_planes(pts_all: np.ndarray, plane_distance: float, num_planes: int = 3,
-                  ransac_n: int = 3, num_iterations: int = 2000):
+                  ransac_n: int = 3, num_iterations: int = 2000, spacing: float = 0.01):
     """Segment multiple planes using RANSAC."""
     if o3d is None:
         raise RuntimeError("Open3D required for plane segmentation")
@@ -554,6 +563,40 @@ def segment_planes(pts_all: np.ndarray, plane_distance: float, num_planes: int =
                     current_inliers = current_inliers[mask]
                     model = (normal[0], normal[1], normal[2], d_val)
                 
+                # Area fill check to see if plane is sufficiently dense
+
+                plane_inlier_pts = pts_sub[current_inliers]
+                if len(plane_inlier_pts) >= 3:
+                    # Project to local 2D coordinate system on the plane
+                    # Vt[0] and Vt[1] span the plane (from SVD earlier)
+                    centered_inliers = plane_inlier_pts - centroid
+                    pts_2d = np.dot(centered_inliers, Vt[:2].T)
+                    
+                    from scipy.spatial import ConvexHull
+                    hull = ConvexHull(pts_2d)
+                    hull_area = hull.volume  # 'volume' refers to area for 2D hull
+                    
+                    # Use a tighter bounding box approximation to avoid arbitrary coordinate axes grid inflation padding
+                    # Using estimated point cloud spacing as the grid cell size area check directly on the points vs hull.
+                    cell_size = spacing
+                    pts_grid = np.floor(pts_2d / cell_size).astype(int)
+                    # Count unique occupied cells
+                    unique_cells = np.unique(pts_grid, axis=0)
+                    occupied_area = len(unique_cells) * (cell_size ** 2)
+                    
+                    if hull_area > 0:
+                        actual_ratio = occupied_area / hull_area
+                        fill_ratio = min(1.0, actual_ratio)
+                        print(f"  Plane {i+1} calculated fill: {actual_ratio*100:.1f}%")
+                        if fill_ratio < 0.5:
+                            print(f"  Plane {i+1} rejected: Fill ratio {actual_ratio*100:.1f}% < 50%. (Occupied: {occupied_area:.4f}m^2, Hull: {hull_area:.4f}m^2)")
+                            continue
+                    else:
+                        fill_ratio = 1.0  # degenerate case, bypass
+                else:
+                    fill_ratio = 1.0
+
+
                 inliers_local = current_inliers.tolist()
         except Exception as e:
             print(f'Plane {i+1} segmentation failed:', e)
@@ -569,11 +612,31 @@ def segment_planes(pts_all: np.ndarray, plane_distance: float, num_planes: int =
         n_unit = n / n_norm
         d_unit = float(d) / n_norm
         
+        # Check if plane is parallel to any existing plane
+        is_parallel = False
+        for p_idx, existing_p in enumerate(planes):
+            dot_val = np.abs(np.dot(n_unit, existing_p['normal']))
+            # acos can return nan if value slightly > 1.0 due to float imprecision, so clip
+            angle_deg = np.rad2deg(np.arccos(np.clip(dot_val, -1.0, 1.0)))
+            # If dot_val is close to 1, angle is close to 0 (parallel) or 180 (anti-parallel)
+            # Since taking abs(dot_val), we only get [0, 90] degrees. 
+            if angle_deg < 5.0:
+                print(f"  Plane {i+1} rejected: Parallel to Plane {p_idx+1} (Angle: {angle_deg:.2f}° < 5°).")
+                is_parallel = True
+                break
+                
+        if is_parallel:
+            mask_keep = np.ones(len(remaining_idx), dtype=bool)
+            mask_keep[np.array(inliers_local, dtype=int)] = False
+            remaining_idx = remaining_idx[mask_keep]
+            continue
+        
         planes.append({
             'normal': n_unit,
             'd': d_unit,
             'model_raw': (a, b, c, d),
-            'inliers': inliers_global
+            'inliers': inliers_global,
+            'fill_ratio': fill_ratio
         })
         
         mask_keep = np.ones(len(remaining_idx), dtype=bool)
@@ -736,7 +799,26 @@ def find_ground_truth_corners(json_path: str):
         frame_data = json.load(f)
     
     corner_positions = []
-    capture = frame_data.get('metrics', [])[2].get('values', [])[0].get('instances', [])
+    
+    # Safely find the metrics object with id == 'metadata' instead of assuming index 2
+    metrics = frame_data.get('metrics', [])
+    metadata_metric = None
+    for m in metrics:
+        if m.get('id') == 'metadata':
+            metadata_metric = m
+            break
+    
+    # Fallback to last metric if 'metadata' id is not explicitly found (e.g. some Unity versions)
+    if metadata_metric is None and metrics:
+        metadata_metric = metrics[-1]
+    elif not metrics:
+        return None
+
+    capture = metadata_metric.get('values', [])
+    if not capture:
+        return None
+        
+    capture = capture[0].get('instances', [])
     for meta in capture:
         transform = meta.get('transformRecord', {})
         position = transform.get('position', None)
@@ -840,6 +922,142 @@ def project_points(points_3d: np.ndarray, fx: float, fy: float, cx: float, cy: f
     return np.stack([u, v], axis=1)
 
 
+def save_multiview_plot(output_path, pts_all, planes, box_corners, gt_corners_cam=None, best_match=None):
+    """Save a multi-view plot (Front, Top, Side) of planes, corners, and GT."""
+    if plt is None:
+        return
+
+    # Use Agg backend for headless saving
+    plt.switch_backend('Agg')
+    
+    fig, axs = plt.subplots(1, 3, figsize=(15, 5))
+    
+    # Colors for planes
+    colors = ['red', 'green', 'blue', 'yellow', 'cyan', 'magenta']
+    
+    # Plot planes
+    for i, plane in enumerate(planes):
+        inliers = plane['inliers']
+        pts = pts_all[inliers]
+        
+        # Downsample for plotting speed if needed
+        if len(pts) > 1000:
+            indices = np.random.choice(len(pts), 1000, replace=False)
+            pts = pts[indices]
+            
+        c = colors[i % len(colors)]
+        alpha = 0.1
+        
+        # XY Plane (Front) - Y inverted
+        axs[0].scatter(pts[:, 0], -pts[:, 1], s=1, color=c, alpha=alpha)
+        # XZ Plane (Top)
+        axs[1].scatter(pts[:, 0], pts[:, 2], s=1, color=c, alpha=alpha)
+        # YZ Plane (Side) - Y inverted
+        axs[2].scatter(pts[:, 2], -pts[:, 1], s=1, color=c, alpha=alpha)
+
+    # Plot Detected Corners
+    if box_corners is not None and len(box_corners) > 0:
+        axs[0].scatter(box_corners[:, 0], -box_corners[:, 1], s=80, c='black', marker='x', label='Detected')
+        axs[1].scatter(box_corners[:, 0], box_corners[:, 2], s=80, c='black', marker='x')
+        axs[2].scatter(box_corners[:, 2], -box_corners[:, 1], s=80, c='black', marker='x')
+
+    # Plot GT Corners
+    if gt_corners_cam is not None:
+        axs[0].scatter(gt_corners_cam[:, 0], -gt_corners_cam[:, 1], s=80, facecolors='none', edgecolors='green', linewidths=2, label='GT')
+        axs[1].scatter(gt_corners_cam[:, 0], gt_corners_cam[:, 2], s=80, facecolors='none', edgecolors='green', linewidths=2)
+        axs[2].scatter(gt_corners_cam[:, 2], -gt_corners_cam[:, 1], s=80, facecolors='none', edgecolors='green', linewidths=2)
+
+    # Highlight Best Match
+    if best_match is not None and box_corners is not None and gt_corners_cam is not None:
+        bm_det_idx = best_match['detected_idx']
+        bm_gt_idx = best_match['gt_idx']
+        
+        if bm_det_idx < len(box_corners):
+            bm_det = box_corners[bm_det_idx]
+            axs[0].scatter(bm_det[0], -bm_det[1], s=120, c='red', marker='x', linewidths=3, label='Best Match Det')
+            axs[1].scatter(bm_det[0], bm_det[2], s=120, c='red', marker='x', linewidths=3)
+            axs[2].scatter(bm_det[2], -bm_det[1], s=120, c='red', marker='x', linewidths=3)
+        
+        if bm_gt_idx < len(gt_corners_cam):
+            bm_gt = gt_corners_cam[bm_gt_idx]
+            axs[0].scatter(bm_gt[0], -bm_gt[1], s=120, facecolors='none', edgecolors='red', linewidths=3, label='Best Match GT')
+            axs[1].scatter(bm_gt[0], bm_gt[2], s=120, facecolors='none', edgecolors='red', linewidths=3)
+            axs[2].scatter(bm_gt[2], -bm_gt[1], s=120, facecolors='none', edgecolors='red', linewidths=3)
+
+    axs[0].set_title('XY Plane (Front) [Y inverted]')
+    axs[0].set_xlabel('X (m)')
+    axs[0].set_ylabel('-Y (m)')
+    axs[0].axis('equal')
+    # axs[0].legend()
+
+    axs[1].set_title('XZ Plane (Top)')
+    axs[1].set_xlabel('X (m)')
+    axs[1].set_ylabel('Z (m)')
+    axs[1].axis('equal')
+
+    axs[2].set_title('YZ Plane (Side) [Y inverted]')
+    axs[2].set_xlabel('Z (m)')
+    axs[2].set_ylabel('-Y (m)')
+    axs[2].axis('equal')
+    
+    plt.tight_layout()
+    plt.savefig(output_path)
+    plt.close(fig)
+
+
+def save_error_vs_distance_plot(output_path, results_data):
+    """
+    Save a plot of Error Distance vs Camera-to-GT Distance.
+    results_data: List of tuples (seq_id, error_dist, cam_dist)
+    """
+    if plt is None:
+        return
+
+    # Use Agg backend for headless saving
+    plt.switch_backend('Agg')
+    
+    errors = []
+    cam_dists = []
+    labels = []
+    
+    for seq_id, err, dist in results_data:
+        if dist is not None:
+            errors.append(err)
+            cam_dists.append(dist)
+            labels.append(seq_id)
+            
+    if not errors:
+        return
+        
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.scatter(cam_dists, errors, c='blue', alpha=0.6, edgecolors='w', s=80)
+    
+    # Label points if not too many
+    if len(labels) < 50:
+        for i, txt in enumerate(labels):
+            ax.annotate(txt, (cam_dists[i], errors[i]), xytext=(5, 5), textcoords='offset points', fontsize=8)
+            
+    ax.set_title('Corner Detection Error vs Camera Distance')
+    ax.set_xlabel('Camera to Ground Truth Distance (m)')
+    ax.set_ylabel('Error Distance (m)')
+    ax.grid(True, alpha=0.3)
+    
+    # Add trend line
+    #if len(errors) > 1:
+    #    try:
+    #        z = np.polyfit(cam_dists, errors, 1)
+    #        p = np.poly1d(z)
+    #        x_range = np.linspace(min(cam_dists), max(cam_dists), 100)
+    #        ax.plot(x_range, p(x_range), "r--", alpha=0.8, label=f'Trend: y={z[0]:.4f}x + {z[1]:.4f}')
+    #        ax.legend()
+    #    except Exception:
+    #        pass
+
+    plt.tight_layout()
+    plt.savefig(output_path)
+    plt.close(fig)
+
+
 # ============================================================================
 # MAIN PIPELINE
 # ============================================================================
@@ -864,11 +1082,9 @@ def run_pipeline(config: Config):
     depth, edges_bin = load_raw(config.raw_dir, config.filter_top_instance)
     print(f"  Depth: {depth.shape}, Edges: {int((edges_bin>0).sum())} pixels")
     
-    if config.output_dir:
+    if config.output_dir and config.save_vis_images:
         d_vis = visualize_depth(depth)
-        e_vis = cv2.cvtColor(edges_bin, cv2.COLOR_GRAY2BGR)
-        combined = np.hstack([d_vis, e_vis])
-        cv2.imwrite(os.path.join(config.output_dir, '01_raw_input.png'), combined)
+        cv2.imwrite(os.path.join(config.output_dir, '01_raw_input.png'), d_vis)
 
     # Stage 2: Buffer edges and compute ROI
     print("\n[Stage 2] Computing ROI from edges...")
@@ -877,6 +1093,25 @@ def run_pipeline(config: Config):
     if roi is None:
         raise RuntimeError("No ROI found")
     print(f"  ROI: {roi}")
+
+    if config.output_dir and config.save_vis_images:
+        # Visualization: Depth underlay + Buffered Edges (Cyan) + ROI (Green)
+        vis_combined = visualize_depth(depth)
+        
+        # Overlay buffered edges
+        # buf is 0/1. We want to show where it is 1.
+        mask_buf = (buf > 0)
+        if mask_buf.any():
+            # Blend Cyan (255, 255, 0) onto the depth map
+            overlay = vis_combined.copy()
+            overlay[mask_buf] = [255, 255, 0] 
+            cv2.addWeighted(overlay, 0.3, vis_combined, 0.7, 0, vis_combined)
+
+        if roi is not None:
+            x1, y1, x2, y2 = roi
+            cv2.rectangle(vis_combined, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            
+        cv2.imwrite(os.path.join(config.output_dir, '02_roi_combined.png'), vis_combined)
     
     # Stage 3: Detect depth edges
     print("\n[Stage 3] Detecting depth edges...")
@@ -892,6 +1127,10 @@ def run_pipeline(config: Config):
         dmin = float(np.percentile(valid_pixels, 5))
         dmax = float(np.percentile(valid_pixels, 95))
         depth_roi[valid_mask] = np.clip(depth_roi[valid_mask], dmin, dmax)
+
+    if config.output_dir and config.save_vis_images:
+        d_vis = visualize_depth(depth_roi)
+        cv2.imwrite(os.path.join(config.output_dir, '03_depth_roi.png'), d_vis)
 
     # Apply morphological smoothing
     k = max(1, int(round(config.buffer_px / 4)))
@@ -922,16 +1161,32 @@ def run_pipeline(config: Config):
             depth_roi_smooth[high_outliers] = d_mean - 3.0 * d_std
             print(f'Removed {outlier_count} outlier pixels from smoothed depth using 2-sigma clipping.')
 
+    if config.output_dir and config.save_vis_images:
+        d_smooth_vis = visualize_depth(depth_roi_smooth)
+        cv2.imwrite(os.path.join(config.output_dir, '03_depth_roi_smooth.png'), d_smooth_vis)
+
     grad, depth_edges = detect_depth_edges(depth_roi_smooth, config.method, 
                                           config.edge_thresh, config.edge_sigma,
                                           smooth=False)
     print(f"  Detected {int((depth_edges>0).sum())} edge pixels")
+
+    if config.output_dir and config.save_vis_images:
+        grad_norm = cv2.normalize(grad, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+        grad_vis = cv2.applyColorMap(grad_norm, cv2.COLORMAP_MAGMA)
+        cv2.imwrite(os.path.join(config.output_dir, '03_gradient.png'), grad_vis)
+        cv2.imwrite(os.path.join(config.output_dir, '03_depth_edges.png'), depth_edges)
     
     # Stage 4: Filter edges by proximity
     loaded_edges_roi = (edges_bin[y1:y2+1, x1:x2+1] > 0).astype(np.uint8)
     depth_edges_filtered, dt = filter_depth_edges(depth_edges, loaded_edges_roi, config.max_edge_dist_px, config.buffer_px)
     
     print(f"  Kept {int((depth_edges_filtered>0).sum())} edge pixels")
+
+    if config.output_dir and config.save_vis_images:
+        dt_norm = cv2.normalize(dt, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+        dt_vis = cv2.applyColorMap(dt_norm, cv2.COLORMAP_VIRIDIS)
+        cv2.imwrite(os.path.join(config.output_dir, '04_distance_transform.png'), dt_vis)
+        cv2.imwrite(os.path.join(config.output_dir, '04_depth_edges_filtered.png'), depth_edges_filtered)
     
     # Stage 5: Find closed loop
     print("\n[Stage 5] Finding closed loop...")
@@ -940,7 +1195,7 @@ def run_pipeline(config: Config):
         raise RuntimeError("No closed loop found")
     print(f"  Found loop with {len(best_loop)} vertices after {iterations} iterations")
     
-    if config.output_dir:
+    if config.output_dir and config.save_vis_images:
         if mosaic is not None:
             cv2.imwrite(os.path.join(config.output_dir, '05_closing_process.png'), mosaic)
         
@@ -955,6 +1210,25 @@ def run_pipeline(config: Config):
     if pts_pixel is None:
         raise RuntimeError("Failed to extract boundary points")
     print(f"  Extracted {len(pts_pixel)} points")
+
+    if config.output_dir and config.save_vis_images and best_loop is not None:
+        poly = best_loop.reshape(-1, 2).astype(np.int32)
+        bx, by, bw, bh = cv2.boundingRect(poly)
+        if bw > 0 and bh > 0:
+            mask = np.zeros(depth_roi.shape[:2], dtype=np.uint8)
+            cv2.fillPoly(mask, [poly], 1)
+            
+            depth_inside = depth_roi.copy()
+            depth_inside[mask == 0] = 0
+            cropped_depth = depth_inside[by:by+bh, bx:bx+bw]
+            
+            cropped_vis = visualize_depth(cropped_depth)
+            
+            # Draw polygon in local coords
+            poly_local = (poly - np.array([bx, by])).reshape(-1, 2).astype(np.int32)
+            cv2.polylines(cropped_vis, [poly_local], True, (0, 255, 0), 1)
+            
+            cv2.imwrite(os.path.join(config.output_dir, '06_cropped_boundary.png'), cropped_vis)
     
     # Stage 7: Find camera intrinsics and convert to camera space
     print("\n[Stage 7] Converting to camera-space coordinates...")
@@ -997,23 +1271,33 @@ def run_pipeline(config: Config):
     pcd.orient_normals_consistent_tangent_plane(100)
     
     # Build mesh
-    bpa_radii = config.bpa_radii
-    if bpa_radii is None:
-        r = config.bpa_radius_factor * spacing
-        bpa_radii = [r, 2*r, 4*r]
-    
-    mesh = build_mesh_from_pointcloud(pcd, bpa_radii)
-    print(f"  Mesh: {len(mesh.triangles)} triangles, {len(mesh.vertices)} vertices")
+    mesh = None
+    if config.use_mesh:
+        bpa_radii = config.bpa_radii
+        if bpa_radii is None:
+            r = config.bpa_radius_factor * spacing
+            bpa_radii = [r, 2*r, 4*r]
+        
+        mesh = build_mesh_from_pointcloud(pcd, bpa_radii)
+        print(f"  Mesh: {len(mesh.triangles)} triangles, {len(mesh.vertices)} vertices")
+    else:
+        print("  Skipping mesh generation (use_mesh=False). Using point cloud directly.")
     
     # Stage 9: Segment planes
     print("\n[Stage 9] Segmenting planes...")
-    pts_all = np.asarray(mesh.vertices)
+    if mesh is not None:
+        pts_all = np.asarray(mesh.vertices)
+        print("  Using mesh vertices for plane segmentation.")
+    else:
+        pts_all = np.asarray(pcd.points)
+        print("  Using point cloud points for plane segmentation.")
+
     plane_distance = max(spacing * 1.5, 1e-3)
     planes = segment_planes(pts_all, plane_distance, config.num_planes, 
-                           config.ransac_n, config.num_iterations)
+                           config.ransac_n, config.num_iterations, spacing=spacing)
     print(f"  Found {len(planes)} planes")
     
-    if config.output_dir and planes:
+    if config.output_dir and config.save_vis_images and planes:
         # Project mesh vertices back to 2D for visualization (Step 9)
         pts_2d = project_points(pts_all, fx, fy, cx, cy)
         
@@ -1076,20 +1360,30 @@ def run_pipeline(config: Config):
     else:
         best_match['camera_to_gt_distance'] = None
 
-    if config.output_dir and 'vis_planes' in locals():
+    if config.output_dir and config.save_vis_images and 'vis_planes' in locals():
         # Step 10 Visualization: Use plane image from Step 9 and add corners
         vis_corners = vis_planes.copy()
         x1, y1, x2, y2 = roi
         
-        # Draw Detected Corners (Blue)
+        # Draw Detected Corners (Black 'x', Best Match Red 'x')
         if len(box_corners) > 0:
             corners_2d = project_points(box_corners, fx, fy, cx, cy)
             corners_2d_roi = corners_2d - np.array([x1, y1])
-            for pt in corners_2d_roi.astype(np.int32):
-                 cv2.circle(vis_corners, tuple(pt), 5, (255, 0, 0), -1) # Blue
-                 cv2.circle(vis_corners, tuple(pt), 3, (0, 0, 0), -1)
+            for i, pt in enumerate(corners_2d_roi.astype(np.int32)):
+                 # Default: Black (0,0,0)
+                 color = (0, 0, 0)
+                 thickness = 2
+                 size = 15
+                 
+                 if 'best_match' in locals() and i == best_match['detected_idx']:
+                     color = (0, 0, 255) # Red
+                     thickness = 3
+                     size = 20
+                 
+                 cv2.drawMarker(vis_corners, tuple(pt), color, markerType=cv2.MARKER_TILTED_CROSS, 
+                                markerSize=size, thickness=thickness)
 
-        # Draw Ground Truth Corners (Green)
+        # Draw Ground Truth Corners (Green Circle, Best Match Red Circle)
         if gt_corners is not None and camera_position is not None and camera_rotation_quat is not None:
             # Transform GT corners (World) -> Camera Space
             # P_world = R * P_cam + t  =>  P_cam = R.T * (P_world - t)
@@ -1109,11 +1403,42 @@ def run_pipeline(config: Config):
             gt_2d = project_points(gt_corners_cam, fx, fy, cx, cy)
             gt_2d_roi = gt_2d - np.array([x1, y1])
             
-            for pt in gt_2d_roi.astype(np.int32):
-                cv2.circle(vis_corners, tuple(pt), 5, (0, 255, 0), -1) # Green
-                cv2.circle(vis_corners, tuple(pt), 3, (0, 0, 0), -1)
+            for i, pt in enumerate(gt_2d_roi.astype(np.int32)):
+                # Default: Green (0,255,0)
+                color = (0, 255, 0)
+                thickness = 2
+                radius = 8
+                
+                if 'best_match' in locals() and i == best_match['gt_idx']:
+                    color = (0, 0, 255) # Red
+                    thickness = 3
+                    radius = 10
+                
+                cv2.circle(vis_corners, tuple(pt), radius, color, thickness)
         
         cv2.imwrite(os.path.join(config.output_dir, '10_planes_corners.png'), vis_corners)
+
+    if config.output_dir:
+        # Generate multi-view plot (Front, Top, Side)
+        gt_corners_cam = None
+        if gt_corners is not None and camera_position is not None and camera_rotation_quat is not None:
+            # Transform GT corners (World) -> Camera Space
+            qx, qy, qz, qw = camera_rotation_quat
+            R = np.array([
+                [1 - 2*(qy**2 + qz**2), 2*(qx*qy - qz*qw), 2*(qx*qz + qy*qw)],
+                [2*(qx*qy + qz*qw), 1 - 2*(qx**2 + qz**2), 2*(qy*qz - qx*qw)],
+                [2*(qx*qz - qy*qw), 2*(qy*qz + qx*qw), 1 - 2*(qx**2 + qy**2)]
+            ])
+            t = np.array(camera_position, dtype=float)
+            
+            gt_corners_cam = (R.T @ (gt_corners - t).T).T
+            # Convert to CV Camera Space (Y-down) for projection
+            gt_corners_cam[:, 1] *= -1
+            
+        save_multiview_plot(
+            os.path.join(config.output_dir, '11_multiview_analysis.png'),
+            pts_all, planes, box_corners, gt_corners_cam, best_match
+        )
 
     print("\nSTATISTICS:")
     all_dists = [m['distance'] for m in all_matches]
