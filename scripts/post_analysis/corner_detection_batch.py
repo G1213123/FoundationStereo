@@ -14,7 +14,7 @@ from contextlib import redirect_stdout
 
 # Add current directory to path to import pipeline
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from corner_detection_lib import Config, run_pipeline, save_error_vs_distance_plot
+from corner_detection_lib import Config, run_pipeline, save_error_vs_distance_plot, save_error_vs_orientation_plot
 
 def main():
     parser = argparse.ArgumentParser(description='Batch Corner Detection')
@@ -79,11 +79,14 @@ def main():
             if result:
                 distances.append(result['distance'])
                 cam_dist = result.get('camera_to_gt_distance')
-                results_data.append((seq_id, result['distance'], cam_dist))
+                ori = result.get('object_orientation')
+                results_data.append((seq_id, result['distance'], cam_dist, ori))
                 
                 msg = f"  Success! Distance: {result['distance']:.6f} m"
                 if cam_dist is not None:
                     msg += f", Cam-GT Dist: {cam_dist:.6f} m"
+                if ori is not None:
+                    msg += f", Orientation: {ori:.2f} deg"
                 print(msg)
             else:
                 print(f"  Failed to detect corners or match ground truth.")
@@ -120,10 +123,11 @@ def main():
             
             f.write(f"\nPer-Sequence Results:\n")
             f.write(f"---------------------\n")
-            f.write(f"{'Sequence ID':<20} | {'Error (m)':<12} | {'Cam-GT Dist (m)':<15}\n")
-            for sid, dist, cam_dist in results_data:
+            f.write(f"{'Sequence ID':<20} | {'Error (m)':<12} | {'Cam-GT Dist (m)':<15} | {'Orientation (deg)':<15}\n")
+            for sid, dist, cam_dist, ori in results_data:
                 cam_str = f"{cam_dist:.6f}" if cam_dist is not None else "N/A"
-                f.write(f"{sid:<20} | {dist:<12.6f} | {cam_str:<15}\n")
+                ori_str = f"{ori:.2f}" if ori is not None else "N/A"
+                f.write(f"{sid:<20} | {dist:<12.6f} | {cam_str:<15} | {ori_str:<15}\n")
         print(f"Summary saved to {summary_path}")
     else:
         print("No successful detections.")
@@ -195,8 +199,15 @@ def main():
 
             # Generate Error vs Distance Plot
             error_plot_file = os.path.join(args.output_dir, "error_vs_distance.png")
-            save_error_vs_distance_plot(error_plot_file, results_data)
+            # Create a separate list for the distance plotting to match expected tuples
+            dist_results_data = [(r[0], r[1], r[2]) for r in results_data]
+            save_error_vs_distance_plot(error_plot_file, dist_results_data)
             print(f"Error vs Distance plot saved to {error_plot_file}")
+
+            # Generate Error vs Orientation Plot
+            orientation_plot_file = os.path.join(args.output_dir, "error_vs_orientation.png")
+            save_error_vs_orientation_plot(orientation_plot_file, results_data)
+            print(f"Error vs Orientation plot saved to {orientation_plot_file}")
 
             # --- RUN ERROR ANALYSIS SUB-MODULE ALONG WITH BATCH ---
             try:

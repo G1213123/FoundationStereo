@@ -793,6 +793,26 @@ def process_planes_and_corners(planes, pts_all, ortho_thresh_deg=20.0, min_inlie
 
     return valid_planes, np.array(corners, dtype=float)
 
+def get_object_orientation(json_path: str):
+    """Extract object orientation (yaw in degrees) from frame_data.json."""
+    import math
+    with open(json_path, 'r') as f:
+        frame_data = json.load(f)
+    
+    captures = frame_data.get('captures', [])
+    for capture in captures:
+        annotations = capture.get('annotations', [])
+        for ann in annotations:
+            if 'bounding box 3D' in ann.get('id', ''):
+                values = ann.get('values', [])
+                for val in values:
+                    rot = val.get('rotation')
+                    if rot:
+                        qx, qy, qz, qw = rot
+                        yaw = math.degrees(math.atan2(2 * (qw * qy + qz * qx), 1 - 2 * (qx * qx + qy * qy)))
+                        return yaw
+    return None
+
 def find_ground_truth_corners(json_path: str):
     """Extract ground truth corners from frame_data.json."""
     with open(json_path, 'r') as f:
@@ -1005,6 +1025,48 @@ def save_multiview_plot(output_path, pts_all, planes, box_corners, gt_corners_ca
     plt.close(fig)
 
 
+def save_error_vs_orientation_plot(output_path, results_data):
+    """
+    Save a plot of Error Distance vs Object Orientation.
+    results_data: List of tuples (seq_id, error_dist, cam_dist, orientation)
+    """
+    if plt is None:
+        return
+
+    # Use Agg backend for headless saving
+    plt.switch_backend('Agg')
+    
+    errors = []
+    orientations = []
+    labels = []
+    
+    for seq_id, err, dist, ori in results_data:
+        if ori is not None:
+            errors.append(err)
+            orientations.append(ori)
+            labels.append(seq_id)
+            
+    if not errors:
+        return
+        
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.scatter(orientations, errors, c='green', alpha=0.6, edgecolors='w', s=80)
+    
+    # Label points if not too many
+    if len(labels) < 50:
+        for i, txt in enumerate(labels):
+            ax.annotate(txt, (orientations[i], errors[i]), xytext=(5, 5), textcoords='offset points', fontsize=8)
+            
+    ax.set_title('Corner Detection Error vs Object Orientation (Yaw)')
+    ax.set_xlabel('Object Orientation (Degrees)')
+    ax.set_ylabel('Error Distance (m)')
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(output_path)
+    plt.close(fig)
+
+
 def save_error_vs_distance_plot(output_path, results_data):
     """
     Save a plot of Error Distance vs Camera-to-GT Distance.
@@ -1140,7 +1202,8 @@ def run_pipeline(config: Config):
     
     mean = np.nanmedian(depth_roi)  # Diagonal depth of module
     std = np.nanstd(depth_roi)
-    valid_mask = ((depth_roi < mean + 2 * std ) & (depth_roi > mean - 2 * std )).astype(np.uint8) * 255
+    # Only filter out far (high depth) outliers
+    valid_mask = ((depth_roi < mean + 2 * std )).astype(np.uint8) * 255
     mask_eroded = cv2.erode(valid_mask, kernel, iterations=1)
     mask_smooth = cv2.dilate(mask_eroded, kernel, iterations=1)
     depth_roi_smooth = d_filled.copy()
@@ -1151,15 +1214,12 @@ def run_pipeline(config: Config):
         d_vals = depth_roi_smooth[valid_smooth]
         d_mean = float(np.mean(d_vals))
         d_std = float(np.std(d_vals))
-        lower_bound = d_mean - 3.0 * d_std
         upper_bound = d_mean + 3.0 * d_std
-        low_outliers = (depth_roi_smooth < lower_bound)
         high_outliers = (depth_roi_smooth > upper_bound)
-        outlier_count = int((low_outliers).sum()) + int((high_outliers).sum())
+        outlier_count = int((high_outliers).sum())
         if outlier_count > 0:
-            depth_roi_smooth[low_outliers] = d_mean + 3.0 * d_std
             depth_roi_smooth[high_outliers] = d_mean - 3.0 * d_std
-            print(f'Removed {outlier_count} outlier pixels from smoothed depth using 2-sigma clipping.')
+            print(f'Removed {outlier_count} far outlier pixels from smoothed depth using 3-sigma clipping.')
 
     if config.output_dir and config.save_vis_images:
         d_smooth_vis = visualize_depth(depth_roi_smooth)
@@ -1191,6 +1251,10 @@ def run_pipeline(config: Config):
     # Stage 5: Find closed loop
     print("\n[Stage 5] Finding closed loop...")
     best_loop, iterations, mosaic = find_closed_loop(depth_edges_filtered, depth_roi, config.buffer_px)
+    if best_loop is None:
+        print("  No closed loop found with depth edges. Falling back to loaded edges from step 1.")
+        best_loop, iterations, mosaic = find_closed_loop(loaded_edges_roi, depth_roi, config.buffer_px)
+        
     if best_loop is None:
         raise RuntimeError("No closed loop found")
     print(f"  Found loop with {len(best_loop)} vertices after {iterations} iterations")
@@ -1328,6 +1392,7 @@ def run_pipeline(config: Config):
     # Stage 11: Compare with ground truth
     print("\n[Stage 11] Comparing with ground truth...")
     gt_corners = find_ground_truth_corners(json_path)
+    obj_orientation = get_object_orientation(json_path)
     if gt_corners is None:
         print("  WARNING: No ground truth corners found")
         return None
@@ -1359,6 +1424,10 @@ def run_pipeline(config: Config):
         best_match['camera_to_gt_distance'] = cam_dist
     else:
         best_match['camera_to_gt_distance'] = None
+
+    if obj_orientation is not None:
+        print(f"  Object Orientation (Yaw): {obj_orientation:.2f} degrees")
+    best_match['object_orientation'] = obj_orientation
 
     if config.output_dir and config.save_vis_images and 'vis_planes' in locals():
         # Step 10 Visualization: Use plane image from Step 9 and add corners
@@ -1521,7 +1590,7 @@ def smooth_depth_roi(depth_roi: np.ndarray, buffer_px: int) -> tuple[np.ndarray,
     # Create binary mask of valid/non-zero depth region
     mean = np.nanmedian(depth_roi)  # Diagonal depth of module
     std = np.nanstd(depth_roi)
-    valid_mask = ((depth_roi < mean + 2 * std ) & (depth_roi > mean - 2 * std )).astype(np.uint8) * 255
+    valid_mask = ((depth_roi < mean + 2 * std )).astype(np.uint8) * 255
     
     # Apply morphological closing to the mask (dilate then erode) to smooth boundary
     mask_eroded = cv2.erode(valid_mask, kernel, iterations=1)
@@ -1531,20 +1600,17 @@ def smooth_depth_roi(depth_roi: np.ndarray, buffer_px: int) -> tuple[np.ndarray,
     depth_roi_smooth = d_filled.copy()
     depth_roi_smooth[mask_smooth == 0] = 0  # zero out regions outside smoothed mask
 
-    # Remove outlier with standard deviation clipping inside the smoothed mask
+    # Remove outlier with standard clipping inside the smoothed mask (only far points)
     valid_smooth = (mask_smooth > 0)
     if valid_smooth.any():
         d_vals = depth_roi_smooth[valid_smooth]
         d_mean = float(np.mean(d_vals))
         d_std = float(np.std(d_vals))
-        lower_bound = d_mean - 3.0 * d_std
         upper_bound = d_mean + 3.0 * d_std
-        low_outliers = (depth_roi_smooth < lower_bound)
         high_outliers = (depth_roi_smooth > upper_bound)
-        outlier_count = int((low_outliers).sum()) + int((high_outliers).sum())
+        outlier_count = int((high_outliers).sum())
         if outlier_count > 0:
-            depth_roi_smooth[low_outliers] = d_mean + 3.0 * d_std
             depth_roi_smooth[high_outliers] = d_mean - 3.0 * d_std
-            print(f'Removed {outlier_count} outlier pixels from smoothed depth using 2-sigma clipping.')
+            print(f'Removed {outlier_count} far outlier pixels from smoothed depth using 3-sigma clipping.')
             
     return depth_roi_smooth, valid_mask, mask_eroded, mask_smooth
